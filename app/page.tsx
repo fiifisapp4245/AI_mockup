@@ -1,18 +1,46 @@
-import { Button } from "@/components/ui/button"
+"use client"
 
-export default function Page() {
+import * as React from "react"
+
+import { FilterGroup, PrinterFilter } from "@/components/dashboard/filters"
+import { KpiCard } from "@/components/dashboard/kpi-card"
+import { kpiSummary } from "@/lib/mock-data"
+
+export default function OverviewPage() {
+  const [printer, setPrinter] = React.useState("3")
+
   return (
-    <div className="flex min-h-svh p-6">
-      <div className="flex max-w-md min-w-0 flex-col gap-4 text-sm leading-loose">
-        <div>
-          <h1 className="font-medium">Project ready!</h1>
-          <p>You may now add components and start building.</p>
-          <p>We&apos;ve already added the button component for you.</p>
-          <Button className="mt-2">Button</Button>
-        </div>
-        <div className="font-mono text-xs text-muted-foreground">
-          (Press <kbd>d</kbd> to toggle dark mode)
-        </div>
+    <div className="flex flex-col gap-8">
+      <FilterGroup>
+        <PrinterFilter value={printer} onChange={setPrinter} />
+      </FilterGroup>
+
+      <div className="flex flex-wrap gap-4">
+        <KpiCard
+          value={`${(kpiSummary.availableHours / 1000).toFixed(2)}K`}
+          label="AvailableHours"
+        />
+        <KpiCard value={String(kpiSummary.totalBuilds)} label="TotalBuilds" />
+        <KpiCard
+          value={kpiSummary.totalPrintHours.toFixed(2)}
+          label="TotalPrintHours"
+        />
+        <KpiCard
+          value={kpiSummary.averageBuildHours.toFixed(2)}
+          label="AverageBuildHours"
+        />
+        <KpiCard
+          value={kpiSummary.averageChangeOverHours.toFixed(2)}
+          label="AverageChangeOverHours"
+        />
+        <KpiCard
+          value={kpiSummary.totalChangeOverHours.toFixed(2)}
+          label="TotalChangeOverHours"
+        />
+        <KpiCard
+          value={`${kpiSummary.utilization.toFixed(2)}%`}
+          label="Utilization"
+        />
       </div>
     </div>
   )
