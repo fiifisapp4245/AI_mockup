@@ -5,6 +5,17 @@ const SEGMENT_COLOR: Record<GanttSegment["type"], string> = {
   ChangeOver: "bg-indigo-700",
 }
 
+function segmentTitle(segment: GanttSegment) {
+  const startDate = new Date(segment.start)
+  const endDate = new Date(segment.end)
+  const durationHours =
+    (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60)
+  const lot = segment.lotId ? ` • Lot ${segment.lotId}` : ""
+  const product = segment.productId ? ` • Product ${segment.productId}` : ""
+
+  return `${segment.type}: ${startDate.toLocaleString()} – ${endDate.toLocaleString()} (${durationHours.toFixed(1)}h)${lot}${product}`
+}
+
 function segmentStyle(
   segment: GanttSegment,
   domainStart: number,
@@ -23,18 +34,28 @@ function segmentStyle(
   }
 }
 
+const TRACK_HEIGHT = {
+  sm: "h-4",
+  md: "h-6",
+  lg: "h-8",
+}
+
 export function GanttRow({
   label,
   segments,
   domainStart,
   domainEnd,
   muted = false,
+  size = "md",
+  trackWidth = 100,
 }: {
   label: string
   segments: GanttSegment[]
   domainStart: number
   domainEnd: number
   muted?: boolean
+  size?: keyof typeof TRACK_HEIGHT
+  trackWidth?: number
 }) {
   return (
     <div className="flex items-center gap-3">
@@ -43,17 +64,20 @@ export function GanttRow({
       >
         {label}
       </span>
-      <div
-        className={`relative flex-1 rounded-sm bg-muted/40 ${muted ? "h-4" : "h-6"}`}
-      >
-        {segments.map((segment, index) => (
-          <div
-            key={index}
-            className={`absolute top-0 h-full rounded-[2px] ${SEGMENT_COLOR[segment.type]} ${muted ? "opacity-50" : ""}`}
-            style={segmentStyle(segment, domainStart, domainEnd)}
-            title={`${segment.type}: ${new Date(segment.start).toLocaleString()} – ${new Date(segment.end).toLocaleString()}`}
-          />
-        ))}
+      <div className="relative flex-1">
+        <div
+          className={`relative overflow-hidden rounded-sm bg-muted/40 ${TRACK_HEIGHT[size]}`}
+          style={{ width: `${trackWidth}%` }}
+        >
+          {segments.map((segment, index) => (
+            <div
+              key={index}
+              className={`absolute top-0 h-full rounded-[2px] ${SEGMENT_COLOR[segment.type]} ${muted ? "opacity-50" : ""}`}
+              style={segmentStyle(segment, domainStart, domainEnd)}
+              title={segmentTitle(segment)}
+            />
+          ))}
+        </div>
       </div>
     </div>
   )

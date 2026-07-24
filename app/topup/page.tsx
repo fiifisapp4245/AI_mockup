@@ -21,6 +21,10 @@ const chartConfig = {
     label: "Topup",
     color: "var(--chart-1)",
   },
+  totalBuilds: {
+    label: "Total Builds",
+    color: "var(--chart-3)",
+  },
 } satisfies ChartConfig
 
 export default function TopupPage() {
@@ -30,11 +34,11 @@ export default function TopupPage() {
 
   const data = React.useMemo(
     () =>
-      generateTopupSeries().map((point) => ({
+      generateTopupSeries(printer).map((point) => ({
         ...point,
         date: new Date(point.date).getTime(),
       })),
-    []
+    [printer]
   )
 
   const monthTicks = React.useMemo(() => {
@@ -81,6 +85,8 @@ export default function TopupPage() {
             />
             <YAxis
               dataKey="topup"
+              domain={[0, 3]}
+              ticks={[0, 1, 2, 3]}
               tickLine={false}
               axisLine={false}
               width={30}
@@ -95,11 +101,18 @@ export default function TopupPage() {
               }
             />
             <Line
-              type="monotone"
+              type="stepAfter"
               dataKey="topup"
               stroke="var(--color-topup)"
               strokeWidth={2}
               dot={false}
+            />
+            <Line
+              dataKey="totalBuilds"
+              stroke="none"
+              dot={false}
+              isAnimationActive={false}
+              legendType="none"
             />
           </LineChart>
         </ChartContainer>

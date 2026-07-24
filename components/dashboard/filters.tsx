@@ -4,8 +4,8 @@ import * as React from "react"
 import { CalendarIcon } from "lucide-react"
 import { format } from "date-fns"
 
+import { PRINTER_IDS } from "@/lib/mock-data"
 import { Label } from "@/components/ui/label"
-import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
 import {
@@ -35,11 +35,18 @@ export function PrinterFilter({
   return (
     <div className="flex flex-col gap-1.5">
       <Label className="text-xs text-muted-foreground">Printer</Label>
-      <Input
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="w-24"
-      />
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger className="w-24">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {PRINTER_IDS.map((id) => (
+            <SelectItem key={id} value={id}>
+              {id}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </div>
   )
 }

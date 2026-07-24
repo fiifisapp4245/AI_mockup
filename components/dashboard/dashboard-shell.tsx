@@ -20,7 +20,14 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
 
       <div className="flex min-h-svh flex-col">
         <header className="flex items-center justify-between border-b bg-background/80 px-6 py-4 backdrop-blur-sm">
-          <h1 className="text-lg font-semibold">Realta 3D Printing Dashboard</h1>
+          <Image
+            src="/02_RT_LOGO_V2_NO-BACKGROUND_TRANSPARENT-01-e1695126249249-qcn33hj1et36toqhvkqx41yywm61qufsfwo1yojfxs.png"
+            alt="Realta"
+            width={173}
+            height={56}
+            priority
+            className="h-8 w-auto"
+          />
           <ThemeToggle />
         </header>
         <div className="border-b bg-background/80 backdrop-blur-sm">

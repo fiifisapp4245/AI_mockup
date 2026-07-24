@@ -27,17 +27,20 @@ export default function TimelinePage() {
   const [end, setEnd] = React.useState(new Date(2025, 3, 18))
 
   const printerSegments = React.useMemo(
-    () => generatePrinterRuntimeSegments(),
-    []
+    () => generatePrinterRuntimeSegments(printer),
+    [printer]
   )
   const printerPlanningSegments = React.useMemo(
-    () => generatePrinterPlanningSegments(),
-    []
+    () => generatePrinterPlanningSegments(printer),
+    [printer]
   )
-  const lotTimelines = React.useMemo(() => generateLotTimelines(), [])
+  const lotTimelines = React.useMemo(
+    () => generateLotTimelines(printer),
+    [printer]
+  )
   const lotPlanningTimelines = React.useMemo(
-    () => generateLotPlanningTimelines(),
-    []
+    () => generateLotPlanningTimelines(printer),
+    [printer]
   )
 
   const domainStart = start.getTime()
@@ -77,19 +80,24 @@ export default function TimelinePage() {
           <GanttLegend />
         </div>
         <GanttAxis domainStart={domainStart} domainEnd={domainEnd} />
-        <div className="flex flex-col gap-1.5">
-          <GanttRow
-            label={printer}
-            segments={printerSegments}
-            domainStart={domainStart}
-            domainEnd={domainEnd}
-          />
-          <GanttRow
-            label="Planning Schedule"
-            segments={printerPlanningSegments}
-            domainStart={domainStart}
-            domainEnd={domainEnd}
-          />
+        <div className="flex flex-col gap-2">
+          <span className="text-sm font-medium">{printer}</span>
+          <div className="flex flex-col gap-1.5 pl-4">
+            <GanttRow
+              label="Production"
+              segments={printerSegments}
+              domainStart={domainStart}
+              domainEnd={domainEnd}
+              trackWidth={85}
+            />
+            <GanttRow
+              label="Planning"
+              segments={printerPlanningSegments}
+              domainStart={domainStart}
+              domainEnd={domainEnd}
+              trackWidth={100}
+            />
+          </div>
         </div>
       </div>
 
@@ -116,6 +124,7 @@ export default function TimelinePage() {
                       segments={lot.segments}
                       domainStart={domainStart}
                       domainEnd={domainEnd}
+                      trackWidth={85}
                     />
                     {planningLot && (
                       <GanttRow
@@ -123,6 +132,7 @@ export default function TimelinePage() {
                         segments={planningLot.segments}
                         domainStart={domainStart}
                         domainEnd={domainEnd}
+                        trackWidth={100}
                       />
                     )}
                   </div>
