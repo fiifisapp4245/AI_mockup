@@ -7,8 +7,7 @@ import { cn } from "@/lib/utils"
 
 const NAV_ITEMS = [
   { href: "/", label: "Overview" },
-  { href: "/topup", label: "Topup & Builds" },
-  { href: "/runtime", label: "Printer Runtime" },
+  { href: "/runtime", label: "Printer Runtime and Topup" },
   { href: "/timeline", label: "Batch/Lot Timeline" },
 ]
 
