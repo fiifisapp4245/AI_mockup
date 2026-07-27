@@ -229,9 +229,30 @@ const RUNTIME_PROFILES: Record<string, Array<[number, number]>> = {
   ],
 }
 
+// Tiles each printer's hand-authored build/idle pattern back-to-back until it
+// covers the same window as the topup data (TOPUP_TOTAL_DAYS), so widening
+// the date filter reveals more real production history instead of running
+// dry after ~10 days while the topup chart keeps going for 61.
+function getRuntimeSegments(printerId: string): Array<[number, number]> {
+  const pattern = RUNTIME_PROFILES[printerId] ?? RUNTIME_PROFILES["3"]
+  const targetHours = TOPUP_TOTAL_DAYS * 24
+
+  const segments: Array<[number, number]> = []
+  let totalHours = 0
+  let index = 0
+  while (totalHours < targetHours) {
+    const segment = pattern[index % pattern.length]
+    segments.push(segment)
+    totalHours += segment[0]
+    index++
+  }
+
+  return segments
+}
+
 export function generateRuntimeSeries(printerId: string = "3"): RuntimePoint[] {
   const start = new Date(2025, 3, 1, 0, 0)
-  const segments = RUNTIME_PROFILES[printerId] ?? RUNTIME_PROFILES["3"]
+  const segments = getRuntimeSegments(printerId)
 
   const points: RuntimePoint[] = []
   let cursor = start
@@ -252,7 +273,7 @@ export function generateRuntimeBuildBoundaries(
   printerId: string = "3"
 ): string[] {
   const start = new Date(2025, 3, 1, 0, 0)
-  const segments = RUNTIME_PROFILES[printerId] ?? RUNTIME_PROFILES["3"]
+  const segments = getRuntimeSegments(printerId)
 
   const boundaries: string[] = []
   let cursor = start
@@ -273,7 +294,7 @@ export type TimeSpan = { start: string; end: string }
 // behind each build on the chart.
 export function generateRuntimeBuildSpans(printerId: string = "3"): TimeSpan[] {
   const start = new Date(2025, 3, 1, 0, 0)
-  const segments = RUNTIME_PROFILES[printerId] ?? RUNTIME_PROFILES["3"]
+  const segments = getRuntimeSegments(printerId)
 
   const spans: TimeSpan[] = []
   let cursor = start
@@ -783,15 +804,15 @@ export function generateForecastPlanningSegments(
   return segments
 }
 
-// One planning cycle (9h build + 2h changeover) per actual production
-// build, chained back-to-back into a single continuous series: 1 while the
-// plan has the printer running, 0 during its changeover, with no time gaps
-// between cycles.
+// One planning cycle (mixed 12h/15h/18h build + 2h changeover) per actual
+// production build, chained back-to-back into a single continuous series: 1
+// while the plan has the printer running, 0 during its changeover, with no
+// time gaps between cycles.
 export function generatePlanningRuntimeSeries(
   printerId: string = "3"
 ): RuntimePoint[] {
   const start = new Date(2025, 3, 1, 0, 0)
-  const segments = RUNTIME_PROFILES[printerId] ?? RUNTIME_PROFILES["3"]
+  const segments = getRuntimeSegments(printerId)
   const buildCount = segments.filter(([, run]) => run === 1).length
 
   const points: RuntimePoint[] = []
@@ -799,8 +820,8 @@ export function generatePlanningRuntimeSeries(
 
   for (let i = 0; i < buildCount; i++) {
     const buildStart = cursor
-    const buildEnd = addHours(buildStart, 9)
-    const changeOverEnd = addHours(buildEnd, 2)
+    const buildEnd = addHours(buildStart, getPlannedBuildHours(i))
+    const changeOverEnd = addHours(buildEnd, PLANNING_CHANGEOVER_HOURS)
 
     points.push({ timestamp: buildStart.toISOString(), run: 1 })
     points.push({ timestamp: addHours(buildEnd, -0.01).toISOString(), run: 1 })
@@ -816,13 +837,13 @@ export function generatePlanningRuntimeSeries(
   return points
 }
 
-// The start/end of each 9h "running" span in the planning schedule, for
-// shading a background behind each planned build.
+// The start/end of each planned "running" span, for shading a background
+// behind each planned build.
 export function generatePlanningBuildSpans(
   printerId: string = "3"
 ): TimeSpan[] {
   const start = new Date(2025, 3, 1, 0, 0)
-  const segments = RUNTIME_PROFILES[printerId] ?? RUNTIME_PROFILES["3"]
+  const segments = getRuntimeSegments(printerId)
   const buildCount = segments.filter(([, run]) => run === 1).length
 
   const spans: TimeSpan[] = []
@@ -830,9 +851,9 @@ export function generatePlanningBuildSpans(
 
   for (let i = 0; i < buildCount; i++) {
     const buildStart = cursor
-    const buildEnd = addHours(buildStart, 9)
+    const buildEnd = addHours(buildStart, getPlannedBuildHours(i))
     spans.push({ start: buildStart.toISOString(), end: buildEnd.toISOString() })
-    cursor = addHours(buildEnd, 2)
+    cursor = addHours(buildEnd, PLANNING_CHANGEOVER_HOURS)
   }
 
   return spans

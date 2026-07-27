@@ -222,14 +222,16 @@ export default function RuntimePage() {
 
   // Shared by both charts so their x-axis pixel columns line up exactly —
   // this is what lets the production build boundaries visually extend from
-  // the runtime chart straight down through the topup chart.
+  // the runtime chart straight down through the topup chart. Capped at a
+  // max tick count (evenly spaced) so wider date ranges don't cram in one
+  // label per day and overlap each other.
   const sharedTicks = React.useMemo(() => {
     const oneDay = 24 * 60 * 60 * 1000
-    const ticks: number[] = []
-    for (let t = domainStart; t <= domainEnd; t += oneDay) {
-      ticks.push(t)
-    }
-    return ticks
+    const days = Math.round((domainEnd - domainStart) / oneDay)
+    const tickCount = Math.max(1, Math.min(days, 10))
+    return Array.from({ length: tickCount + 1 }, (_, i) => {
+      return domainStart + (i / tickCount) * (domainEnd - domainStart)
+    })
   }, [domainStart, domainEnd])
 
   const tickFormatter = (value: number) =>
