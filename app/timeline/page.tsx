@@ -8,6 +8,7 @@ import {
   LotIdFilter,
   PrinterFilter,
 } from "@/components/dashboard/filters"
+import { ChatSidebar, type ChatPrompt } from "@/components/dashboard/chat-sidebar"
 import {
   GanttAxis,
   GanttLegend,
@@ -16,9 +17,42 @@ import {
 import {
   generateLotPlanningTimelines,
   generateLotTimelines,
-  generatePrinterPlanningSegments,
-  generatePrinterRuntimeSegments,
+  generatePrinterLotChain,
 } from "@/lib/mock-data"
+
+const CHAT_SUGGESTIONS = [
+  "Which lots are behind schedule?",
+  "How does production compare to planning?",
+  "Which lot had the longest changeover?",
+]
+
+const CHAT_PROMPTS: ChatPrompt[] = [
+  {
+    keywords: ["behind", "overrun", "late", "delay"],
+    answer:
+      "A few lots are running behind their planned build window — look for amber \"Behind Schedule\" segments on the Planning row. Those show where the plan finished before actual production caught up.",
+  },
+  {
+    keywords: ["ahead", "faster", "better"],
+    answer:
+      "Where you see a green \"Ahead of plan\" segment on the Production row, that build finished faster than its planned duration — a good sign for that lot/operator pairing.",
+  },
+  {
+    keywords: ["changeover", "changeove", "setup"],
+    answer:
+      "Changeover time (the dark indigo segments) varies per printer and lot. Production changeovers tend to run noticeably longer than the fixed 2h planning changeover — that's expected and factored separately from build-time comparisons.",
+  },
+  {
+    keywords: ["compare", "comparison", "vs", "versus", "production", "planning"],
+    answer:
+      "Production and Planning are compared in two stages: build-vs-build and changeover-vs-changeover independently, so a long changeover doesn't unfairly color a build that actually beat its plan.",
+  },
+  {
+    keywords: ["lot", "lots"],
+    answer:
+      "Use the Lot Id filter above to isolate a single lot's Production vs Planning bars, or leave it on \"All\" to see every lot chained back-to-back on the printer's timeline.",
+  },
+]
 
 export default function TimelinePage() {
   const [printer, setPrinter] = React.useState("3")
@@ -26,12 +60,8 @@ export default function TimelinePage() {
   const [start, setStart] = React.useState(new Date(2025, 3, 1))
   const [end, setEnd] = React.useState(new Date(2025, 3, 18))
 
-  const printerSegments = React.useMemo(
-    () => generatePrinterRuntimeSegments(printer),
-    [printer]
-  )
-  const printerPlanningSegments = React.useMemo(
-    () => generatePrinterPlanningSegments(printer),
+  const printerLotChain = React.useMemo(
+    () => generatePrinterLotChain(printer),
     [printer]
   )
   const lotTimelines = React.useMemo(
@@ -57,7 +87,8 @@ export default function TimelinePage() {
       : lotPlanningTimelines.filter((lot) => lot.lotId === lotId)
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex gap-6">
+      <div className="flex min-w-0 flex-1 flex-col gap-8">
       <FilterGroup>
         <DateRangeFilter
           label="Date"
@@ -79,23 +110,20 @@ export default function TimelinePage() {
           <h2 className="text-sm font-medium">Printer Runtime</h2>
           <GanttLegend showDelta />
         </div>
-        <GanttAxis domainStart={domainStart} domainEnd={domainEnd} />
         <div className="flex flex-col gap-2">
           <span className="text-sm font-medium">{printer}</span>
           <div className="flex flex-col gap-1.5 pl-4">
             <GanttRow
               label="Production"
-              segments={printerSegments}
-              domainStart={domainStart}
-              domainEnd={domainEnd}
-              trackWidth={85}
+              segments={printerLotChain.productionSegments}
+              domainStart={printerLotChain.domainStart}
+              domainEnd={printerLotChain.domainEnd}
             />
             <GanttRow
               label="Planning"
-              segments={printerPlanningSegments}
-              domainStart={domainStart}
-              domainEnd={domainEnd}
-              trackWidth={100}
+              segments={printerLotChain.planningSegments}
+              domainStart={printerLotChain.domainStart}
+              domainEnd={printerLotChain.domainEnd}
             />
           </div>
         </div>
@@ -142,6 +170,9 @@ export default function TimelinePage() {
           </div>
         </div>
       </div>
+      </div>
+
+      <ChatSidebar suggestions={CHAT_SUGGESTIONS} prompts={CHAT_PROMPTS} />
     </div>
   )
 }

@@ -1,3 +1,7 @@
+"use client"
+
+import * as React from "react"
+
 import type { GanttSegment } from "@/lib/mock-data"
 
 const SEGMENT_COLOR: Record<GanttSegment["type"], string> = {
@@ -5,17 +9,15 @@ const SEGMENT_COLOR: Record<GanttSegment["type"], string> = {
   ChangeOver: "bg-indigo-700",
   Overrun: "bg-amber-500",
   Ahead: "bg-emerald-500",
+  Leave: "bg-rose-400",
 }
 
-function segmentTitle(segment: GanttSegment) {
-  const startDate = new Date(segment.start)
-  const endDate = new Date(segment.end)
-  const durationHours =
-    (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60)
-  const lot = segment.lotId ? ` • Lot ${segment.lotId}` : ""
-  const product = segment.productId ? ` • Product ${segment.productId}` : ""
-
-  return `${segment.type}: ${startDate.toLocaleString()} – ${endDate.toLocaleString()} (${durationHours.toFixed(1)}h)${lot}${product}`
+const SEGMENT_LABEL: Record<GanttSegment["type"], string> = {
+  Build: "Build",
+  ChangeOver: "ChangeOver",
+  Overrun: "Behind Schedule",
+  Ahead: "Ahead of plan",
+  Leave: "Leave",
 }
 
 function segmentStyle(
@@ -36,6 +38,70 @@ function segmentStyle(
   }
 }
 
+function SegmentTooltip({ segment }: { segment: GanttSegment }) {
+  const startDate = new Date(segment.start)
+  const endDate = new Date(segment.end)
+  const durationHours =
+    (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60)
+
+  return (
+    <div className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 w-max -translate-x-1/2">
+      <div className="grid min-w-32 items-start gap-1.5 rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs shadow-xl">
+        <div className="flex items-center gap-1.5 font-medium text-foreground">
+          <span
+            className={`size-2 shrink-0 rounded-[2px] ${SEGMENT_COLOR[segment.type]}`}
+          />
+          {SEGMENT_LABEL[segment.type]}
+        </div>
+        <div className="grid gap-1">
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-muted-foreground">Start</span>
+            <span className="font-mono text-foreground tabular-nums">
+              {startDate.toLocaleString()}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-muted-foreground">End</span>
+            <span className="font-mono text-foreground tabular-nums">
+              {endDate.toLocaleString()}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-muted-foreground">Duration</span>
+            <span className="font-mono text-foreground tabular-nums">
+              {durationHours.toFixed(1)}h
+            </span>
+          </div>
+          {segment.lotId && (
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-muted-foreground">Lot</span>
+              <span className="font-mono text-foreground">
+                {segment.lotId}
+              </span>
+            </div>
+          )}
+          {segment.productId && (
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-muted-foreground">Product</span>
+              <span className="font-mono text-foreground">
+                {segment.productId}
+              </span>
+            </div>
+          )}
+          {segment.operator && (
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-muted-foreground">Operator</span>
+              <span className="font-mono text-foreground">
+                {segment.operator}
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const TRACK_HEIGHT = {
   sm: "h-4",
   md: "h-6",
@@ -50,6 +116,7 @@ export function GanttRow({
   muted = false,
   size = "md",
   trackWidth = 100,
+  labelWidth = "w-20",
 }: {
   label: string
   segments: GanttSegment[]
@@ -58,11 +125,14 @@ export function GanttRow({
   muted?: boolean
   size?: keyof typeof TRACK_HEIGHT
   trackWidth?: number
+  labelWidth?: string
 }) {
+  const [hoveredIndex, setHoveredIndex] = React.useState<number | null>(null)
+
   return (
     <div className="flex items-center gap-3">
       <span
-        className={`w-20 shrink-0 text-sm italic ${muted ? "text-muted-foreground/70" : "text-muted-foreground"}`}
+        className={`${labelWidth} shrink-0 truncate text-sm italic ${muted ? "text-muted-foreground/70" : "text-muted-foreground"}`}
       >
         {label}
       </span>
@@ -76,10 +146,24 @@ export function GanttRow({
               key={index}
               className={`absolute top-0 h-full rounded-[2px] ${SEGMENT_COLOR[segment.type]} ${muted ? "opacity-50" : ""}`}
               style={segmentStyle(segment, domainStart, domainEnd)}
-              title={segmentTitle(segment)}
+              onMouseEnter={() => setHoveredIndex(index)}
+              onMouseLeave={() => setHoveredIndex(null)}
             />
           ))}
         </div>
+        {hoveredIndex !== null && (
+          <div
+            className="pointer-events-none absolute inset-0 top-0"
+            style={{ width: `${trackWidth}%` }}
+          >
+            <div
+              className="absolute top-0 h-full"
+              style={segmentStyle(segments[hoveredIndex], domainStart, domainEnd)}
+            >
+              <SegmentTooltip segment={segments[hoveredIndex]} />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -87,8 +171,10 @@ export function GanttRow({
 
 export function GanttLegend({
   showDelta = false,
+  showLeave = false,
 }: {
   showDelta?: boolean
+  showLeave?: boolean
 } = {}) {
   return (
     <div className="flex items-center gap-4 text-xs text-muted-foreground">
@@ -105,13 +191,19 @@ export function GanttLegend({
         <>
           <span className="flex items-center gap-1.5">
             <span className="size-2.5 rounded-[2px] bg-amber-500" />
-            Overrun (bad planning)
+            Behind Schedule
           </span>
           <span className="flex items-center gap-1.5">
             <span className="size-2.5 rounded-[2px] bg-emerald-500" />
             Ahead of plan
           </span>
         </>
+      )}
+      {showLeave && (
+        <span className="flex items-center gap-1.5">
+          <span className="size-2.5 rounded-[2px] bg-rose-400" />
+          Leave
+        </span>
       )}
     </div>
   )
@@ -120,9 +212,11 @@ export function GanttLegend({
 export function GanttAxis({
   domainStart,
   domainEnd,
+  labelOffset = 92,
 }: {
   domainStart: number
   domainEnd: number
+  labelOffset?: number
 }) {
   const days = Math.round((domainEnd - domainStart) / (1000 * 60 * 60 * 24))
   const tickCount = Math.min(days, 4)
@@ -132,7 +226,10 @@ export function GanttAxis({
   })
 
   return (
-    <div className="ml-[92px] flex justify-between border-b pb-2 text-xs text-muted-foreground">
+    <div
+      className="flex justify-between border-b pb-2 text-xs text-muted-foreground"
+      style={{ marginLeft: labelOffset }}
+    >
       {ticks.map((tick, index) => (
         <span key={index}>
           {tick.toLocaleDateString("en-US", { month: "short", day: "2-digit" })}

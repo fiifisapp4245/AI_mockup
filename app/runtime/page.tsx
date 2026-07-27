@@ -11,6 +11,7 @@ import {
   YAxis,
 } from "recharts"
 
+import { ChatSidebar, type ChatPrompt } from "@/components/dashboard/chat-sidebar"
 import {
   DateRangeFilter,
   FilterGroup,
@@ -32,6 +33,35 @@ import {
 } from "@/lib/mock-data"
 
 const SYNC_ID = "printer-runtime-topup"
+
+const CHAT_SUGGESTIONS = [
+  "How is production tracking against planning?",
+  "When was the last topup?",
+  "Which builds ran longest?",
+]
+
+const CHAT_PROMPTS: ChatPrompt[] = [
+  {
+    keywords: ["topup", "top-up", "top up"],
+    answer:
+      "The Topup chart tracks material top-ups alongside total build starts over time — spikes in the topup line usually line up with a new build starting on the Printer Runtime chart above it.",
+  },
+  {
+    keywords: ["compare", "comparison", "vs", "versus", "planning", "plan"],
+    answer:
+      "The Production and Planning lines are synced on the same time axis — toggle either series off with the legend buttons to isolate one, or hover anywhere to compare both charts at that exact timestamp.",
+  },
+  {
+    keywords: ["longest", "build", "duration", "run"],
+    answer:
+      "Build boundaries are marked with dashed vertical lines across both charts. Wider shaded bands between boundaries indicate longer-running builds — check the Batch/Lot Timeline page for exact per-lot durations.",
+  },
+  {
+    keywords: ["printer"],
+    answer:
+      "Use the Printer filter above to switch which printer's runtime and topup data is shown — each printer has its own production history and planning schedule.",
+  },
+]
 
 // Keep only points inside [start, end], plus the point just before and just
 // after the window so a step line still shows the right value at the edges.
@@ -213,7 +243,8 @@ export default function RuntimePage() {
     new Date(value as number).toLocaleString()
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex gap-6">
+      <div className="flex min-w-0 flex-1 flex-col gap-8">
       <FilterGroup>
         <DateRangeFilter
           label="Date"
@@ -448,6 +479,9 @@ export default function RuntimePage() {
           </ChartContainer>
         </div>
       </div>
+      </div>
+
+      <ChatSidebar suggestions={CHAT_SUGGESTIONS} prompts={CHAT_PROMPTS} />
     </div>
   )
 }
