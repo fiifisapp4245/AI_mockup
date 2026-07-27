@@ -34,7 +34,7 @@ function matchPrompt(input: string, prompts: ChatPrompt[]): string | null {
 }
 
 export function ChatSidebar({
-  title = "Data Assistant",
+  title = "Optimizer Assistant",
   description = "Trained on this page's live dataset. Ask about trends, outliers, or specific lots and operators.",
   suggestions,
   prompts,

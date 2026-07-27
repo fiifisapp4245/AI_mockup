@@ -288,16 +288,24 @@ export function generateRuntimeBuildBoundaries(
   return boundaries
 }
 
-export type TimeSpan = { start: string; end: string }
+export type TimeSpan = {
+  start: string
+  end: string
+  lotId: string
+  productId: string
+}
 
 // The start/end of each "running" (value 1) span, for shading a background
-// behind each build on the chart.
+// behind each build on the chart. Carries the lot/product it corresponds to
+// so the runtime tooltip can show which batch is running at a given time.
 export function generateRuntimeBuildSpans(printerId: string = "3"): TimeSpan[] {
   const start = new Date(2025, 3, 1, 0, 0)
   const segments = getRuntimeSegments(printerId)
+  const { lotIds, productIds } = getPrinterProfile(printerId)
 
   const spans: TimeSpan[] = []
   let cursor = start
+  let buildIndex = 0
 
   for (const [hours, run] of segments) {
     const segmentStart = cursor
@@ -306,7 +314,10 @@ export function generateRuntimeBuildSpans(printerId: string = "3"): TimeSpan[] {
       spans.push({
         start: segmentStart.toISOString(),
         end: cursor.toISOString(),
+        lotId: lotIds[buildIndex % lotIds.length],
+        productId: productIds[buildIndex % productIds.length],
       })
+      buildIndex++
     }
   }
 
@@ -314,7 +325,14 @@ export function generateRuntimeBuildSpans(printerId: string = "3"): TimeSpan[] {
 }
 
 export type GanttSegment = {
-  type: "Build" | "ChangeOver" | "Overrun" | "Ahead" | "Leave"
+  type:
+    | "Build"
+    | "ChangeOver"
+    | "Overrun"
+    | "BuildOverrun"
+    | "Ahead"
+    | "Leave"
+    | "Maintenance"
   start: string
   end: string
   lotId?: string
@@ -329,6 +347,22 @@ type PrinterProfile = {
   productIds: string[]
   operators: string[]
 }
+
+// One shared operator roster across every printer — the same ten people
+// rotate across all three printers rather than each printer having its own
+// separate pool of names.
+const SHARED_OPERATORS = [
+  "Siobhan Ryan",
+  "Liam Kennedy",
+  "Grainne Fitzgerald",
+  "Darragh Murphy",
+  "Aoibhinn Walsh",
+  "Tadhg Byrne",
+  "Clodagh Doyle",
+  "Eamon Kelly",
+  "Roisin Gallagher",
+  "Fiachra Brennan",
+]
 
 const PRINTER_PROFILES: Record<string, PrinterProfile> = {
   "1": {
@@ -355,18 +389,7 @@ const PRINTER_PROFILES: Record<string, PrinterProfile> = {
       "PRD-10267",
       "PRD-10282",
     ],
-    operators: [
-      "Aoife Byrne",
-      "Cian Murphy",
-      "Niamh Kelly",
-      "Sean Gallagher",
-      "Roisin Doyle",
-      "Padraig Walsh",
-      "Orla Fitzgerald",
-      "Declan Ryan",
-      "Sinead Brennan",
-      "Eoin Nolan",
-    ],
+    operators: SHARED_OPERATORS,
   },
   "2": {
     buildHours: [20, 24, 22, 26, 20, 28, 24, 22, 30, 26, 24],
@@ -393,18 +416,7 @@ const PRINTER_PROFILES: Record<string, PrinterProfile> = {
       "PRD-20435",
       "PRD-20449",
     ],
-    operators: [
-      "Sean O'Brien",
-      "Roisin Walsh",
-      "Conor Doyle",
-      "Aisling Byrne",
-      "Fionn Murphy",
-      "Caoimhe Kelly",
-      "Ronan Gallagher",
-      "Maeve Brennan",
-      "Cormac Nolan",
-      "Grainne Ryan",
-    ],
+    operators: SHARED_OPERATORS,
   },
   "3": {
     buildHours: [18, 22, 16, 20, 24, 18, 26, 20, 22, 30, 26, 40, 60],
@@ -433,18 +445,7 @@ const PRINTER_PROFILES: Record<string, PrinterProfile> = {
       "PRD-30269",
       "PRD-30284",
     ],
-    operators: [
-      "Siobhan Ryan",
-      "Liam Kennedy",
-      "Grainne Fitzgerald",
-      "Darragh Murphy",
-      "Aoibhinn Walsh",
-      "Tadhg Byrne",
-      "Clodagh Doyle",
-      "Eamon Kelly",
-      "Roisin Gallagher",
-      "Fiachra Brennan",
-    ],
+    operators: SHARED_OPERATORS,
   },
 }
 
@@ -564,7 +565,7 @@ export function generatePrinterLotChain(printerId: string = "3"): PrinterLotChai
       const planBuildPhaseEnd = addHours(lotStart, maxBuildHours)
       if (plannedBuildHours < maxBuildHours) {
         planningSegments.push({
-          type: "Overrun",
+          type: "BuildOverrun",
           start: planBuildEnd.toISOString(),
           end: planBuildPhaseEnd.toISOString(),
           ...common,
@@ -669,6 +670,124 @@ export function generateOperatorForecast(
 
     const start = new Date(cursor)
     const buildEnd = addHours(start, getPlannedBuildHours(index))
+    const changeOverEnd = addHours(buildEnd, PLANNING_CHANGEOVER_HOURS)
+
+    const segments: GanttSegment[] = [
+      {
+        type: "Build",
+        start: start.toISOString(),
+        end: buildEnd.toISOString(),
+        lotId,
+        productId,
+        operator,
+      },
+      {
+        type: "ChangeOver",
+        start: buildEnd.toISOString(),
+        end: changeOverEnd.toISOString(),
+        lotId,
+        productId,
+        operator,
+      },
+    ]
+
+    builds.push({ lotId, productId, operator, segments })
+    cursor = changeOverEnd
+  }
+
+  return builds
+}
+
+export type MaintenanceWindow = { start: string; end: string }
+
+// Recurring maintenance downtime per printer — a fixed-length block every N
+// days, phase-offset per printer so all three don't line up on the same day.
+const MAINTENANCE_INTERVAL_DAYS: Record<string, number> = {
+  "1": 6,
+  "2": 5,
+  "3": 7,
+}
+const MAINTENANCE_DURATION_HOURS: Record<string, number> = {
+  "1": 3,
+  "2": 4,
+  "3": 5,
+}
+const MAINTENANCE_OFFSET_DAYS: Record<string, number> = {
+  "1": 2,
+  "2": 1,
+  "3": 3,
+}
+
+export function generatePrinterMaintenanceSchedule(
+  printerId: string = "3",
+  count: number = 40
+): MaintenanceWindow[] {
+  const forecastStart = getForecastStart(printerId)
+  const lastBuildEnd = addHours(
+    forecastStart,
+    count * (getPlannedBuildHours(0) + PLANNING_CHANGEOVER_HOURS + 24)
+  )
+
+  const intervalDays = MAINTENANCE_INTERVAL_DAYS[printerId] ?? 6
+  const durationHours = MAINTENANCE_DURATION_HOURS[printerId] ?? 4
+  const offsetDays = MAINTENANCE_OFFSET_DAYS[printerId] ?? 2
+
+  const windows: MaintenanceWindow[] = []
+  let cursor = addDays(forecastStart, offsetDays)
+
+  while (cursor.getTime() < lastBuildEnd.getTime()) {
+    const end = addHours(cursor, durationHours)
+    windows.push({ start: cursor.toISOString(), end: end.toISOString() })
+    cursor = addDays(cursor, intervalDays)
+  }
+
+  return windows
+}
+
+// The same round-robin forecast as generateOperatorForecast, but re-optimized
+// around printer maintenance: whenever a build's start would run into a
+// maintenance window, it's pushed out to the end of that window before being
+// scheduled, so no build ever overlaps downtime.
+export function generateOptimizedOperatorForecast(
+  printerId: string = "3",
+  count: number = 40
+): OperatorForecastBuild[] {
+  const pairs = getPrinterBuildPairs(printerId)
+  const { lotIds, productIds, operators } = getPrinterProfile(printerId)
+  const maintenanceWindows = generatePrinterMaintenanceSchedule(
+    printerId,
+    count
+  ).map((window) => ({
+    start: new Date(window.start).getTime(),
+    end: new Date(window.end).getTime(),
+  }))
+
+  const builds: OperatorForecastBuild[] = []
+  let cursor = getForecastStart(printerId)
+
+  for (let i = 0; i < count; i++) {
+    const index = pairs.length + i
+    const lotId = lotIds[index % lotIds.length]
+    const productId = productIds[index % productIds.length]
+    const operator = operators[index % operators.length]
+    const buildHours = getPlannedBuildHours(index)
+
+    let start = new Date(cursor)
+    let pushedOut = true
+    while (pushedOut) {
+      pushedOut = false
+      const startMs = start.getTime()
+      const buildEndMs = startMs + buildHours * 60 * 60 * 1000
+      for (const window of maintenanceWindows) {
+        if (startMs < window.end && buildEndMs > window.start) {
+          start = new Date(window.end)
+          pushedOut = true
+          break
+        }
+      }
+    }
+
+    const buildEnd = addHours(start, buildHours)
     const changeOverEnd = addHours(buildEnd, PLANNING_CHANGEOVER_HOURS)
 
     const segments: GanttSegment[] = [
@@ -838,13 +957,15 @@ export function generatePlanningRuntimeSeries(
 }
 
 // The start/end of each planned "running" span, for shading a background
-// behind each planned build.
+// behind each planned build. Carries the lot/product it corresponds to so
+// the runtime tooltip can show which batch is planned at a given time.
 export function generatePlanningBuildSpans(
   printerId: string = "3"
 ): TimeSpan[] {
   const start = new Date(2025, 3, 1, 0, 0)
   const segments = getRuntimeSegments(printerId)
   const buildCount = segments.filter(([, run]) => run === 1).length
+  const { lotIds, productIds } = getPrinterProfile(printerId)
 
   const spans: TimeSpan[] = []
   let cursor = start
@@ -852,7 +973,12 @@ export function generatePlanningBuildSpans(
   for (let i = 0; i < buildCount; i++) {
     const buildStart = cursor
     const buildEnd = addHours(buildStart, getPlannedBuildHours(i))
-    spans.push({ start: buildStart.toISOString(), end: buildEnd.toISOString() })
+    spans.push({
+      start: buildStart.toISOString(),
+      end: buildEnd.toISOString(),
+      lotId: lotIds[i % lotIds.length],
+      productId: productIds[i % productIds.length],
+    })
     cursor = addHours(buildEnd, PLANNING_CHANGEOVER_HOURS)
   }
 

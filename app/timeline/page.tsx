@@ -30,7 +30,7 @@ const CHAT_PROMPTS: ChatPrompt[] = [
   {
     keywords: ["behind", "overrun", "late", "delay"],
     answer:
-      "A few lots are running behind their planned build window — look for amber \"Behind Schedule\" segments on the Planning row. Those show where the plan finished before actual production caught up.",
+      "A few lots are running behind their planned build window — check the Planning row for red \"Behind Schedule (Build)\" segments (the build itself ran long) versus amber \"Behind Schedule (Changeover)\" segments (only the changeover ran long).",
   },
   {
     keywords: ["ahead", "faster", "better"],

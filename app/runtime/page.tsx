@@ -117,6 +117,119 @@ function fillGrid<T extends { timestamp: number }>(
   return [...points, ...additions].sort((a, b) => a.timestamp - b.timestamp)
 }
 
+type RuntimeBatchSpan = {
+  start: number
+  end: number
+  lotId: string
+  productId: string
+}
+
+function findSpanAt(
+  spans: RuntimeBatchSpan[],
+  timestamp: number
+): RuntimeBatchSpan | undefined {
+  return spans.find((span) => timestamp >= span.start && timestamp < span.end)
+}
+
+function BatchTooltipBlock({
+  title,
+  color,
+  span,
+}: {
+  title: string
+  color: string
+  span?: RuntimeBatchSpan
+}) {
+  return (
+    <div className="grid gap-1 border-t border-border/50 pt-1.5 first:border-t-0 first:pt-0">
+      <div className="flex items-center gap-1.5 font-medium text-foreground">
+        <span
+          className="size-2 shrink-0 rounded-[2px]"
+          style={{ backgroundColor: color }}
+        />
+        {title}
+      </div>
+      {span ? (
+        <>
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-muted-foreground">Lot</span>
+            <span className="font-mono text-foreground">{span.lotId}</span>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-muted-foreground">Product</span>
+            <span className="font-mono text-foreground">{span.productId}</span>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-muted-foreground">Start</span>
+            <span className="font-mono text-foreground tabular-nums">
+              {new Date(span.start).toLocaleString()}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-muted-foreground">End</span>
+            <span className="font-mono text-foreground tabular-nums">
+              {new Date(span.end).toLocaleString()}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-muted-foreground">Duration</span>
+            <span className="font-mono text-foreground tabular-nums">
+              {((span.end - span.start) / (1000 * 60 * 60)).toFixed(1)}h
+            </span>
+          </div>
+        </>
+      ) : (
+        <span className="text-muted-foreground">No active batch</span>
+      )}
+    </div>
+  )
+}
+
+// Custom tooltip for the Printer Runtime chart — instead of just the raw
+// 0/1 run value, looks up which batch (lot/product/start/end/duration) is
+// active at the hovered timestamp for each visible series.
+function RuntimeBatchTooltip({
+  active,
+  label,
+  productionSpans,
+  planningSpans,
+  showProduction,
+  showPlanning,
+}: {
+  active?: boolean
+  label?: number
+  productionSpans: RuntimeBatchSpan[]
+  planningSpans: RuntimeBatchSpan[]
+  showProduction: boolean
+  showPlanning: boolean
+}) {
+  if (!active || label === undefined || (!showProduction && !showPlanning)) {
+    return null
+  }
+
+  return (
+    <div className="grid min-w-56 gap-2 rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs shadow-xl">
+      <div className="font-medium text-foreground">
+        {new Date(label).toLocaleString()}
+      </div>
+      {showProduction && (
+        <BatchTooltipBlock
+          title="Production"
+          color="var(--chart-1)"
+          span={findSpanAt(productionSpans, label)}
+        />
+      )}
+      {showPlanning && (
+        <BatchTooltipBlock
+          title="Planning"
+          color="var(--chart-3)"
+          span={findSpanAt(planningSpans, label)}
+        />
+      )}
+    </div>
+  )
+}
+
 const chartConfig = {
   run: {
     label: "Production",
@@ -185,6 +298,8 @@ export default function RuntimePage() {
       generateRuntimeBuildSpans(printer).map((span) => ({
         start: new Date(span.start).getTime(),
         end: new Date(span.end).getTime(),
+        lotId: span.lotId,
+        productId: span.productId,
       })),
     [printer]
   )
@@ -203,6 +318,8 @@ export default function RuntimePage() {
       generatePlanningBuildSpans(printer).map((span) => ({
         start: new Date(span.start).getTime(),
         end: new Date(span.end).getTime(),
+        lotId: span.lotId,
+        productId: span.productId,
       })),
     [printer]
   )
@@ -294,7 +411,7 @@ export default function RuntimePage() {
           </div>
           <ChartContainer
             config={chartConfig}
-            className="aspect-auto h-[320px] w-full"
+            className="aspect-auto h-[320px] w-full [&_.recharts-cartesian-axis-tick_text]:fill-foreground [&_.recharts-cartesian-axis-tick_text]:font-semibold"
           >
             <LineChart
               syncId={SYNC_ID}
@@ -335,14 +452,19 @@ export default function RuntimePage() {
               <YAxis
                 dataKey="run"
                 domain={[0, 1]}
-                tickCount={3}
+                ticks={[0, 1]}
                 tickLine={false}
                 axisLine={false}
                 width={30}
               />
               <ChartTooltip
                 content={
-                  <ChartTooltipContent labelFormatter={tooltipLabelFormatter} />
+                  <RuntimeBatchTooltip
+                    productionSpans={productionBuildSpans}
+                    planningSpans={planningBuildSpans}
+                    showProduction={visibleSeries.production}
+                    showPlanning={visibleSeries.planning}
+                  />
                 }
               />
               {visibleSeries.production &&
@@ -420,7 +542,7 @@ export default function RuntimePage() {
           <h2 className="text-sm font-medium">Topup and Builds by StartTime</h2>
           <ChartContainer
             config={chartConfig}
-            className="aspect-auto h-[320px] w-full"
+            className="aspect-auto h-[320px] w-full [&_.recharts-cartesian-axis-tick_text]:fill-foreground [&_.recharts-cartesian-axis-tick_text]:font-semibold"
           >
             <LineChart
               syncId={SYNC_ID}

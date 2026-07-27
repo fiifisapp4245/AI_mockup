@@ -6,6 +6,7 @@ import { ChatSidebar, type ChatPrompt } from "@/components/dashboard/chat-sideba
 import {
   DateRangeFilter,
   FilterGroup,
+  OperatorFilter,
   PrinterFilter,
 } from "@/components/dashboard/filters"
 import {
@@ -17,7 +18,10 @@ import {
   generateForecastPlanningSegments,
   generateOperatorForecast,
   generateOperatorLeaves,
+  generateOptimizedOperatorForecast,
+  generatePrinterMaintenanceSchedule,
   getPrinterOperators,
+  PRINTER_IDS,
   type GanttSegment,
 } from "@/lib/mock-data"
 
@@ -30,6 +34,7 @@ const CHAT_SUGGESTIONS = [
   "Who's on leave this week?",
   "Which operator has the most builds?",
   "Is anyone overbooked?",
+  "When is the next maintenance window?",
 ]
 
 const CHAT_PROMPTS: ChatPrompt[] = [
@@ -51,69 +56,183 @@ const CHAT_PROMPTS: ChatPrompt[] = [
   {
     keywords: ["operator", "operators", "roster", "who"],
     answer:
-      "The operator roster shown here is shared across this page, Printer Runtime, and the Batch/Lot Timeline — switching the Printer filter swaps in that printer's own operator pool.",
+      "Use the Operator filter above to isolate a single operator's row, or leave it on \"All\" to see the full roster. Switching the Printer filter to \"All\" condenses every printer's schedule for that operator onto a single row instead of splitting it by printer.",
   },
   {
     keywords: ["date", "slicer", "range", "window"],
     answer:
       "Use the Date filter above to narrow or widen the visible window — it defaults to the first 7 days of the forecast to keep the timeline readable.",
   },
+  {
+    keywords: ["maintenance", "downtime", "offline"],
+    answer:
+      "The Optimized Schedule of Assets section below adds each printer's recurring maintenance downtime (the gray \"Maintenance\" segments) and re-times every build so none of them overlap a maintenance window — the Planning row goes blank during that window instead of showing a build.",
+  },
 ]
+
+type PrinterBundle = {
+  printerId: string
+  planningSegments: GanttSegment[]
+  optimizedPlanningSegments: GanttSegment[]
+  maintenanceSegments: GanttSegment[]
+  forecastBuilds: { operator: string; segments: GanttSegment[] }[]
+  optimizedBuilds: { operator: string; segments: GanttSegment[] }[]
+  leaves: { operator: string; start: string; end: string }[]
+}
+
+type OperatorRow = { operator: string; segments: GanttSegment[] }
+
+// Merges a given printer's per-build/per-leave records into one row per
+// operator, then folds those rows across every selected printer so an
+// operator who happens to work more than one printer still ends up on a
+// single condensed line instead of one row per printer.
+function condenseOperatorRows(
+  bundles: PrinterBundle[],
+  pick: (bundle: PrinterBundle) => OperatorRow[]
+): OperatorRow[] {
+  const rowsByOperator = new Map<string, GanttSegment[]>()
+
+  bundles.forEach((bundle) => {
+    pick(bundle).forEach(({ operator, segments }) => {
+      const existing = rowsByOperator.get(operator) ?? []
+      rowsByOperator.set(operator, [...existing, ...segments])
+    })
+  })
+
+  return Array.from(rowsByOperator.entries()).map(([operator, segments]) => ({
+    operator,
+    segments,
+  }))
+}
 
 export default function AssetUtilizationPage() {
   const [printer, setPrinter] = React.useState("3")
+  const [operatorFilter, setOperatorFilter] = React.useState("All")
 
-  const forecastBuilds = React.useMemo(
-    () => generateOperatorForecast(printer, FORECAST_BUILD_COUNT),
-    [printer]
-  )
+  // The operator roster narrows to whichever printer(s) are currently
+  // selected — reset back to "All" whenever that selection changes so a
+  // stale operator name from a different printer can't stay selected.
+  const [prevPrinter, setPrevPrinter] = React.useState(printer)
+  if (printer !== prevPrinter) {
+    setPrevPrinter(printer)
+    setOperatorFilter("All")
+  }
 
-  const planningSegments = React.useMemo(
-    () => generateForecastPlanningSegments(printer, FORECAST_BUILD_COUNT),
-    [printer]
-  )
+  const operatorOptions = React.useMemo(() => {
+    const ids = printer === "All" ? PRINTER_IDS : [printer]
+    return Array.from(new Set(ids.flatMap((id) => getPrinterOperators(id))))
+  }, [printer])
 
-  const leaves = React.useMemo(
-    () => generateOperatorLeaves(printer, FORECAST_BUILD_COUNT),
-    [printer]
-  )
+  const printerBundles = React.useMemo<PrinterBundle[]>(() => {
+    const ids = printer === "All" ? PRINTER_IDS : [printer]
 
-  const operators = React.useMemo(() => getPrinterOperators(printer), [printer])
+    return ids.map((id) => {
+      const rawForecastBuilds = generateOperatorForecast(id, FORECAST_BUILD_COUNT)
+      const rawOptimizedBuilds = generateOptimizedOperatorForecast(
+        id,
+        FORECAST_BUILD_COUNT
+      )
+      const leaves = generateOperatorLeaves(id, FORECAST_BUILD_COUNT).filter(
+        (leave) => operatorFilter === "All" || leave.operator === operatorFilter
+      )
+      const maintenanceWindows = generatePrinterMaintenanceSchedule(
+        id,
+        FORECAST_BUILD_COUNT
+      )
+      const planningSegments = generateForecastPlanningSegments(
+        id,
+        FORECAST_BUILD_COUNT
+      )
+      const operators = getPrinterOperators(id).filter(
+        (operator) => operatorFilter === "All" || operator === operatorFilter
+      )
 
+      const forecastBuilds = operators.map((operator) => ({
+        operator,
+        segments: [
+          ...rawForecastBuilds
+            .filter((build) => build.operator === operator)
+            .flatMap((build) => build.segments),
+          ...leaves
+            .filter((leave) => leave.operator === operator)
+            .map((leave): GanttSegment => ({
+              type: "Leave",
+              start: leave.start,
+              end: leave.end,
+              operator,
+            })),
+        ],
+      }))
+
+      const optimizedBuilds = operators.map((operator) => ({
+        operator,
+        segments: [
+          ...rawOptimizedBuilds
+            .filter((build) => build.operator === operator)
+            .flatMap((build) => build.segments),
+          ...leaves
+            .filter((leave) => leave.operator === operator)
+            .map((leave): GanttSegment => ({
+              type: "Leave",
+              start: leave.start,
+              end: leave.end,
+              operator,
+            })),
+        ],
+      }))
+
+      // The optimized builds are already re-timed to skip maintenance, so
+      // flattening every operator's segments back together reconstructs the
+      // printer's full schedule with a genuine gap — not a build — sitting
+      // in each maintenance window.
+      const optimizedPlanningSegments: GanttSegment[] = rawOptimizedBuilds
+        .flatMap((build) => build.segments)
+        .sort(
+          (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
+        )
+
+      const maintenanceSegments: GanttSegment[] = maintenanceWindows.map(
+        (window) => ({
+          type: "Maintenance",
+          start: window.start,
+          end: window.end,
+        })
+      )
+
+      return {
+        printerId: id,
+        planningSegments,
+        optimizedPlanningSegments,
+        maintenanceSegments,
+        forecastBuilds,
+        optimizedBuilds,
+        leaves,
+      }
+    })
+  }, [printer, operatorFilter])
+
+  // Condensed so an operator gets exactly one row regardless of how many
+  // printers their schedule spans, rather than a separate row per printer.
   const operatorRows = React.useMemo(
-    () =>
-      operators.map((operator) => {
-        const leaveSegments: GanttSegment[] = leaves
-          .filter((leave) => leave.operator === operator)
-          .map((leave) => ({
-            type: "Leave",
-            start: leave.start,
-            end: leave.end,
-            operator,
-          }))
-
-        return {
-          operator,
-          segments: [
-            ...forecastBuilds
-              .filter((build) => build.operator === operator)
-              .flatMap((build) => build.segments),
-            ...leaveSegments,
-          ],
-        }
-      }),
-    [operators, forecastBuilds, leaves]
+    () => condenseOperatorRows(printerBundles, (bundle) => bundle.forecastBuilds),
+    [printerBundles]
+  )
+  const optimizedOperatorRows = React.useMemo(
+    () => condenseOperatorRows(printerBundles, (bundle) => bundle.optimizedBuilds),
+    [printerBundles]
   )
 
   const fullRangeStart = React.useMemo(() => {
-    const allSegments = [
-      ...planningSegments,
-      ...forecastBuilds.flatMap((build) => build.segments),
+    const allStarts = [
+      ...printerBundles.flatMap((bundle) =>
+        bundle.planningSegments.map((segment) => new Date(segment.start).getTime())
+      ),
+      ...operatorRows.flatMap((row) =>
+        row.segments.map((segment) => new Date(segment.start).getTime())
+      ),
     ]
-    return Math.min(
-      ...allSegments.map((segment) => new Date(segment.start).getTime())
-    )
-  }, [planningSegments, forecastBuilds])
+    return allStarts.length ? Math.min(...allStarts) : new Date(2025, 3, 1).getTime()
+  }, [printerBundles, operatorRows])
 
   // The date slicer — defaults to the first week of the forecast so the
   // page isn't showing all 40 builds across every operator at once.
@@ -127,54 +246,118 @@ export default function AssetUtilizationPage() {
   const domainStart = viewStart.getTime()
   const domainEnd = viewEnd.getTime()
 
+  const showPrinterLabel = printerBundles.length > 1
+
   return (
     <div className="flex gap-6">
       <div className="flex min-w-0 flex-1 flex-col gap-8">
-      <FilterGroup>
-        <DateRangeFilter
-          label="Date"
-          start={viewStart}
-          end={viewEnd}
-          onChangeStart={setViewStart}
-          onChangeEnd={setViewEnd}
-        />
-        <PrinterFilter value={printer} onChange={setPrinter} />
-      </FilterGroup>
+        <FilterGroup>
+          <DateRangeFilter
+            label="Date"
+            start={viewStart}
+            end={viewEnd}
+            onChangeStart={setViewStart}
+            onChangeEnd={setViewEnd}
+          />
+          <PrinterFilter value={printer} onChange={setPrinter} includeAll />
+          <OperatorFilter
+            value={operatorFilter}
+            onChange={setOperatorFilter}
+            operators={operatorOptions}
+          />
+        </FilterGroup>
 
-      <div className="flex flex-col gap-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-medium">Asset Utilization</h2>
-          <GanttLegend showLeave />
-        </div>
-        <p className="text-xs text-muted-foreground">
-          {`Forecasted assignment of the next ${FORECAST_BUILD_COUNT} builds across operators, continuing from where the historical schedule leaves off. Use the date slicer above to narrow the window.`}
-        </p>
-        <GanttAxis
-          domainStart={domainStart}
-          domainEnd={domainEnd}
-          labelOffset={LABEL_OFFSET}
-        />
-        <div className="flex flex-col gap-1.5 pl-4">
-          <GanttRow
-            label="Planning"
-            segments={planningSegments}
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-medium">Asset Utilization</h2>
+            <GanttLegend showLeave />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {`Forecasted assignment of the next ${FORECAST_BUILD_COUNT} builds across operators, continuing from where the historical schedule leaves off. Use the date slicer above to narrow the window.`}
+          </p>
+          <GanttAxis
             domainStart={domainStart}
             domainEnd={domainEnd}
-            labelWidth={LABEL_WIDTH}
-            muted
+            labelOffset={LABEL_OFFSET}
           />
-          {operatorRows.map((row) => (
-            <GanttRow
-              key={row.operator}
-              label={row.operator}
-              segments={row.segments}
-              domainStart={domainStart}
-              domainEnd={domainEnd}
-              labelWidth={LABEL_WIDTH}
-            />
-          ))}
+          <div className="flex flex-col gap-1.5 pl-4">
+            {printerBundles.map((bundle) => (
+              <GanttRow
+                key={`planning-${bundle.printerId}`}
+                label={showPrinterLabel ? `Planning (${bundle.printerId})` : "Planning"}
+                segments={bundle.planningSegments}
+                domainStart={domainStart}
+                domainEnd={domainEnd}
+                labelWidth={LABEL_WIDTH}
+                muted
+              />
+            ))}
+            {operatorRows.map((row) => (
+              <GanttRow
+                key={row.operator}
+                label={row.operator}
+                segments={row.segments}
+                domainStart={domainStart}
+                domainEnd={domainEnd}
+                labelWidth={LABEL_WIDTH}
+              />
+            ))}
+          </div>
         </div>
-      </div>
+
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-medium">Optimized Schedule of Assets</h2>
+            <GanttLegend showMaintenance showLeave />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Same forecasted assignment, re-timed around each printer&apos;s
+            recurring maintenance downtime so no build ever overlaps a
+            maintenance window — the Planning row sits blank during
+            maintenance instead of showing a build.
+          </p>
+          <GanttAxis
+            domainStart={domainStart}
+            domainEnd={domainEnd}
+            labelOffset={LABEL_OFFSET}
+          />
+          <div className="flex flex-col gap-1.5 pl-4">
+            {printerBundles.map((bundle) => (
+              <GanttRow
+                key={`maintenance-${bundle.printerId}`}
+                label={
+                  showPrinterLabel ? `Maintenance (${bundle.printerId})` : "Maintenance"
+                }
+                segments={bundle.maintenanceSegments}
+                domainStart={domainStart}
+                domainEnd={domainEnd}
+                labelWidth={LABEL_WIDTH}
+                muted
+              />
+            ))}
+            {printerBundles.map((bundle) => (
+              <GanttRow
+                key={`planning-${bundle.printerId}`}
+                label={showPrinterLabel ? `Planning (${bundle.printerId})` : "Planning"}
+                segments={bundle.optimizedPlanningSegments}
+                domainStart={domainStart}
+                domainEnd={domainEnd}
+                labelWidth={LABEL_WIDTH}
+                muted
+              />
+            ))}
+            {optimizedOperatorRows.map((row) => (
+              <GanttRow
+                key={row.operator}
+                label={row.operator}
+                segments={row.segments}
+                domainStart={domainStart}
+                domainEnd={domainEnd}
+                labelWidth={LABEL_WIDTH}
+              />
+            ))}
+          </div>
+        </div>
       </div>
 
       <ChatSidebar suggestions={CHAT_SUGGESTIONS} prompts={CHAT_PROMPTS} />

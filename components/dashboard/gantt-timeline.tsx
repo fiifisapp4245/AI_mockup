@@ -8,16 +8,20 @@ const SEGMENT_COLOR: Record<GanttSegment["type"], string> = {
   Build: "bg-sky-400",
   ChangeOver: "bg-indigo-700",
   Overrun: "bg-amber-500",
+  BuildOverrun: "bg-red-500",
   Ahead: "bg-emerald-500",
   Leave: "bg-rose-400",
+  Maintenance: "bg-slate-500",
 }
 
 const SEGMENT_LABEL: Record<GanttSegment["type"], string> = {
   Build: "Build",
   ChangeOver: "ChangeOver",
-  Overrun: "Behind Schedule",
+  Overrun: "Behind Schedule (Changeover)",
+  BuildOverrun: "Behind Schedule (Build)",
   Ahead: "Ahead of plan",
   Leave: "Leave",
+  Maintenance: "Maintenance",
 }
 
 function segmentStyle(
@@ -172,9 +176,11 @@ export function GanttRow({
 export function GanttLegend({
   showDelta = false,
   showLeave = false,
+  showMaintenance = false,
 }: {
   showDelta?: boolean
   showLeave?: boolean
+  showMaintenance?: boolean
 } = {}) {
   return (
     <div className="flex items-center gap-4 text-xs text-muted-foreground">
@@ -191,7 +197,11 @@ export function GanttLegend({
         <>
           <span className="flex items-center gap-1.5">
             <span className="size-2.5 rounded-[2px] bg-amber-500" />
-            Behind Schedule
+            Behind Schedule (Changeover)
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="size-2.5 rounded-[2px] bg-red-500" />
+            Behind Schedule (Build)
           </span>
           <span className="flex items-center gap-1.5">
             <span className="size-2.5 rounded-[2px] bg-emerald-500" />
@@ -203,6 +213,12 @@ export function GanttLegend({
         <span className="flex items-center gap-1.5">
           <span className="size-2.5 rounded-[2px] bg-rose-400" />
           Leave
+        </span>
+      )}
+      {showMaintenance && (
+        <span className="flex items-center gap-1.5">
+          <span className="size-2.5 rounded-[2px] bg-slate-500" />
+          Maintenance
         </span>
       )}
     </div>

@@ -28,9 +28,11 @@ export function FilterGroup({ children }: { children: React.ReactNode }) {
 export function PrinterFilter({
   value,
   onChange,
+  includeAll = false,
 }: {
   value: string
   onChange: (value: string) => void
+  includeAll?: boolean
 }) {
   return (
     <div className="flex flex-col gap-1.5">
@@ -40,9 +42,39 @@ export function PrinterFilter({
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
+          {includeAll && <SelectItem value="All">All</SelectItem>}
           {PRINTER_IDS.map((id) => (
             <SelectItem key={id} value={id}>
               {id}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  )
+}
+
+export function OperatorFilter({
+  value,
+  onChange,
+  operators,
+}: {
+  value: string
+  onChange: (value: string) => void
+  operators: string[]
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label className="text-xs text-muted-foreground">Operator</Label>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger className="w-44">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="All">All</SelectItem>
+          {operators.map((operator) => (
+            <SelectItem key={operator} value={operator}>
+              {operator}
             </SelectItem>
           ))}
         </SelectContent>
