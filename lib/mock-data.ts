@@ -293,7 +293,7 @@ export function generateRuntimeBuildSpans(printerId: string = "3"): TimeSpan[] {
 }
 
 export type GanttSegment = {
-  type: "Build" | "ChangeOver"
+  type: "Build" | "ChangeOver" | "Overrun" | "Ahead"
   start: string
   end: string
   lotId?: string
@@ -393,39 +393,89 @@ function getPrinterProfile(printerId: string): PrinterProfile {
   return PRINTER_PROFILES[printerId] ?? PRINTER_PROFILES["3"]
 }
 
-export function generatePrinterRuntimeSegments(
-  printerId: string = "3"
-): GanttSegment[] {
+const PLANNING_BUILD_HOURS = 9
+const PLANNING_CHANGEOVER_HOURS = 2
+const PLANNED_CYCLE_HOURS = PLANNING_BUILD_HOURS + PLANNING_CHANGEOVER_HOURS
+
+type BuildPair = {
+  start: Date
+  actualHours: number
+  changeOverHours: number
+  lotId: string
+  productId: string
+}
+
+// Each production build and its planned counterpart share the same start
+// time, so the two rows read as "same lot, same starting point." Whichever
+// one is shorter for that lot leaves a gap before the next lot begins.
+function getPrinterBuildPairs(printerId: string): BuildPair[] {
   const { buildHours, changeOverHours, lotIds, productIds } =
     getPrinterProfile(printerId)
   const start = new Date(2025, 3, 1)
-  const segments: GanttSegment[] = []
+  const pairs: BuildPair[] = []
   let cursor = start
 
   buildHours.forEach((hours, index) => {
     // Actual builds run a little faster than the nominal plan: trim 1-2h.
     const actualHours = Math.max(hours - (1 + (index % 2)), 1)
-    const buildStart = cursor
-    const buildEnd = addHours(buildStart, actualHours)
-    segments.push({
-      type: "Build",
-      start: buildStart.toISOString(),
-      end: buildEnd.toISOString(),
+    const co = index === buildHours.length - 1 ? 0 : changeOverHours
+
+    pairs.push({
+      start: new Date(cursor),
+      actualHours,
+      changeOverHours: co,
       lotId: lotIds[index % lotIds.length],
       productId: productIds[index % productIds.length],
     })
 
-    const co = index === buildHours.length - 1 ? 0 : changeOverHours
-    const changeOverEnd = addHours(buildEnd, co)
-    if (co > 0) {
-      segments.push({
-        type: "ChangeOver",
-        start: buildEnd.toISOString(),
-        end: changeOverEnd.toISOString(),
-      })
-    }
-    cursor = changeOverEnd
+    cursor = addHours(cursor, actualHours + co)
   })
+
+  return pairs
+}
+
+export function generatePrinterRuntimeSegments(
+  printerId: string = "3"
+): GanttSegment[] {
+  const segments: GanttSegment[] = []
+
+  getPrinterBuildPairs(printerId).forEach(
+    ({ start, actualHours, changeOverHours, lotId, productId }) => {
+      const buildEnd = addHours(start, actualHours)
+      segments.push({
+        type: "Build",
+        start: start.toISOString(),
+        end: buildEnd.toISOString(),
+        lotId,
+        productId,
+      })
+
+      let cycleEnd = buildEnd
+      if (changeOverHours > 0) {
+        cycleEnd = addHours(buildEnd, changeOverHours)
+        segments.push({
+          type: "ChangeOver",
+          start: buildEnd.toISOString(),
+          end: cycleEnd.toISOString(),
+          lotId,
+          productId,
+        })
+      }
+
+      // Production finished ahead of the planned cycle length — better
+      // than planned, shown in green on the Production row.
+      const actualTotal = actualHours + changeOverHours
+      if (actualTotal < PLANNED_CYCLE_HOURS) {
+        segments.push({
+          type: "Ahead",
+          start: cycleEnd.toISOString(),
+          end: addHours(start, PLANNED_CYCLE_HOURS).toISOString(),
+          lotId,
+          productId,
+        })
+      }
+    }
+  )
 
   return segments
 }
@@ -433,37 +483,42 @@ export function generatePrinterRuntimeSegments(
 export function generatePrinterPlanningSegments(
   printerId: string = "3"
 ): GanttSegment[] {
-  const { lotIds, productIds } = getPrinterProfile(printerId)
-  const start = new Date(2025, 3, 1)
-  const end = new Date(2025, 3, 11)
   const segments: GanttSegment[] = []
-  let cursor = start
-  let buildIndex = 0
 
-  while (cursor < end) {
-    const buildStart = cursor
-    const buildEnd = addHours(buildStart, 9)
-    const clampedBuildEnd = buildEnd > end ? end : buildEnd
-    segments.push({
-      type: "Build",
-      start: buildStart.toISOString(),
-      end: clampedBuildEnd.toISOString(),
-      lotId: lotIds[buildIndex % lotIds.length],
-      productId: productIds[buildIndex % productIds.length],
-    })
-    buildIndex++
+  getPrinterBuildPairs(printerId).forEach(
+    ({ start, actualHours, changeOverHours, lotId, productId }) => {
+      const buildEnd = addHours(start, PLANNING_BUILD_HOURS)
+      segments.push({
+        type: "Build",
+        start: start.toISOString(),
+        end: buildEnd.toISOString(),
+        lotId,
+        productId,
+      })
 
-    if (clampedBuildEnd >= end) break
+      const changeOverEnd = addHours(buildEnd, PLANNING_CHANGEOVER_HOURS)
+      segments.push({
+        type: "ChangeOver",
+        start: buildEnd.toISOString(),
+        end: changeOverEnd.toISOString(),
+        lotId,
+        productId,
+      })
 
-    const changeOverEnd = addHours(buildEnd, 2)
-    const clampedChangeOverEnd = changeOverEnd > end ? end : changeOverEnd
-    segments.push({
-      type: "ChangeOver",
-      start: buildEnd.toISOString(),
-      end: clampedChangeOverEnd.toISOString(),
-    })
-    cursor = clampedChangeOverEnd
-  }
+      // Production overran the planned cycle length — bad planning, shown
+      // in amber on the Planning row.
+      const actualTotal = actualHours + changeOverHours
+      if (actualTotal > PLANNED_CYCLE_HOURS) {
+        segments.push({
+          type: "Overrun",
+          start: changeOverEnd.toISOString(),
+          end: addHours(start, actualTotal).toISOString(),
+          lotId,
+          productId,
+        })
+      }
+    }
+  )
 
   return segments
 }

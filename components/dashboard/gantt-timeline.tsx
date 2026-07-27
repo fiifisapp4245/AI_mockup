@@ -3,6 +3,8 @@ import type { GanttSegment } from "@/lib/mock-data"
 const SEGMENT_COLOR: Record<GanttSegment["type"], string> = {
   Build: "bg-sky-400",
   ChangeOver: "bg-indigo-700",
+  Overrun: "bg-amber-500",
+  Ahead: "bg-emerald-500",
 }
 
 function segmentTitle(segment: GanttSegment) {
@@ -83,7 +85,11 @@ export function GanttRow({
   )
 }
 
-export function GanttLegend() {
+export function GanttLegend({
+  showDelta = false,
+}: {
+  showDelta?: boolean
+} = {}) {
   return (
     <div className="flex items-center gap-4 text-xs text-muted-foreground">
       <span className="font-medium text-foreground">Type</span>
@@ -95,6 +101,18 @@ export function GanttLegend() {
         <span className="size-2.5 rounded-[2px] bg-indigo-700" />
         ChangeOver
       </span>
+      {showDelta && (
+        <>
+          <span className="flex items-center gap-1.5">
+            <span className="size-2.5 rounded-[2px] bg-amber-500" />
+            Overrun (bad planning)
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="size-2.5 rounded-[2px] bg-emerald-500" />
+            Ahead of plan
+          </span>
+        </>
+      )}
     </div>
   )
 }

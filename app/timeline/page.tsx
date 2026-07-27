@@ -77,7 +77,7 @@ export default function TimelinePage() {
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-medium">Printer Runtime</h2>
-          <GanttLegend />
+          <GanttLegend showDelta />
         </div>
         <GanttAxis domainStart={domainStart} domainEnd={domainEnd} />
         <div className="flex flex-col gap-2">
