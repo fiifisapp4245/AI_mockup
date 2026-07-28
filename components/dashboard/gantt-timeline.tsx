@@ -12,6 +12,7 @@ const SEGMENT_COLOR: Record<GanttSegment["type"], string> = {
   Ahead: "bg-emerald-500",
   Leave: "bg-rose-400",
   Maintenance: "bg-slate-500",
+  StartOffset: "bg-gray-400",
 }
 
 const SEGMENT_LABEL: Record<GanttSegment["type"], string> = {
@@ -22,6 +23,7 @@ const SEGMENT_LABEL: Record<GanttSegment["type"], string> = {
   Ahead: "Ahead of plan",
   Leave: "Leave",
   Maintenance: "Maintenance",
+  StartOffset: "Start Difference",
 }
 
 function segmentStyle(
@@ -47,6 +49,7 @@ function SegmentTooltip({ segment }: { segment: GanttSegment }) {
   const endDate = new Date(segment.end)
   const durationHours =
     (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60)
+  const showStartEnd = segment.type !== "StartOffset"
 
   return (
     <div className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 w-max -translate-x-1/2">
@@ -58,24 +61,34 @@ function SegmentTooltip({ segment }: { segment: GanttSegment }) {
           {SEGMENT_LABEL[segment.type]}
         </div>
         <div className="grid gap-1">
-          <div className="flex items-center justify-between gap-4">
-            <span className="text-muted-foreground">Start</span>
-            <span className="font-mono text-foreground tabular-nums">
-              {startDate.toLocaleString()}
-            </span>
-          </div>
-          <div className="flex items-center justify-between gap-4">
-            <span className="text-muted-foreground">End</span>
-            <span className="font-mono text-foreground tabular-nums">
-              {endDate.toLocaleString()}
-            </span>
-          </div>
+          {showStartEnd && (
+            <>
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-muted-foreground">Start</span>
+                <span className="font-mono text-foreground tabular-nums">
+                  {startDate.toLocaleString()}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-muted-foreground">End</span>
+                <span className="font-mono text-foreground tabular-nums">
+                  {endDate.toLocaleString()}
+                </span>
+              </div>
+            </>
+          )}
           <div className="flex items-center justify-between gap-4">
             <span className="text-muted-foreground">Duration</span>
             <span className="font-mono text-foreground tabular-nums">
               {durationHours.toFixed(1)}h
             </span>
           </div>
+          {segment.reason && (
+            <div className="grid gap-0.5">
+              <span className="text-muted-foreground">Reason</span>
+              <span className="max-w-56 text-foreground">{segment.reason}</span>
+            </div>
+          )}
           {segment.lotId && (
             <div className="flex items-center justify-between gap-4">
               <span className="text-muted-foreground">Lot</span>
@@ -121,6 +134,8 @@ export function GanttRow({
   size = "md",
   trackWidth = 100,
   labelWidth = "w-20",
+  highlightedKey = null,
+  onHighlightKeyChange,
 }: {
   label: string
   segments: GanttSegment[]
@@ -130,6 +145,8 @@ export function GanttRow({
   size?: keyof typeof TRACK_HEIGHT
   trackWidth?: number
   labelWidth?: string
+  highlightedKey?: string | null
+  onHighlightKeyChange?: (key: string | null) => void
 }) {
   const [hoveredIndex, setHoveredIndex] = React.useState<number | null>(null)
 
@@ -145,15 +162,26 @@ export function GanttRow({
           className={`relative overflow-hidden rounded-sm bg-muted/40 ${TRACK_HEIGHT[size]}`}
           style={{ width: `${trackWidth}%` }}
         >
-          {segments.map((segment, index) => (
-            <div
-              key={index}
-              className={`absolute top-0 h-full rounded-[2px] ${SEGMENT_COLOR[segment.type]} ${muted ? "opacity-50" : ""}`}
-              style={segmentStyle(segment, domainStart, domainEnd)}
-              onMouseEnter={() => setHoveredIndex(index)}
-              onMouseLeave={() => setHoveredIndex(null)}
-            />
-          ))}
+          {segments.map((segment, index) => {
+            const segmentKey = segment.groupKey ?? segment.lotId
+            const isPaired = Boolean(segmentKey) && segmentKey === highlightedKey
+
+            return (
+              <div
+                key={index}
+                className={`absolute top-0 h-full rounded-[2px] ${isPaired ? "bg-fuchsia-500" : SEGMENT_COLOR[segment.type]} ${muted ? "opacity-50" : ""} ${isPaired ? "ring-2 ring-fuchsia-300" : ""}`}
+                style={segmentStyle(segment, domainStart, domainEnd)}
+                onMouseEnter={() => {
+                  setHoveredIndex(index)
+                  onHighlightKeyChange?.(segmentKey ?? null)
+                }}
+                onMouseLeave={() => {
+                  setHoveredIndex(null)
+                  onHighlightKeyChange?.(null)
+                }}
+              />
+            )
+          })}
         </div>
         {hoveredIndex !== null && (
           <div
@@ -177,10 +205,12 @@ export function GanttLegend({
   showDelta = false,
   showLeave = false,
   showMaintenance = false,
+  showStartOffset = false,
 }: {
   showDelta?: boolean
   showLeave?: boolean
   showMaintenance?: boolean
+  showStartOffset?: boolean
 } = {}) {
   return (
     <div className="flex items-center gap-4 text-xs text-muted-foreground">
@@ -203,10 +233,6 @@ export function GanttLegend({
             <span className="size-2.5 rounded-[2px] bg-red-500" />
             Behind Schedule (Build)
           </span>
-          <span className="flex items-center gap-1.5">
-            <span className="size-2.5 rounded-[2px] bg-emerald-500" />
-            Ahead of plan
-          </span>
         </>
       )}
       {showLeave && (
@@ -219,6 +245,12 @@ export function GanttLegend({
         <span className="flex items-center gap-1.5">
           <span className="size-2.5 rounded-[2px] bg-slate-500" />
           Maintenance
+        </span>
+      )}
+      {showStartOffset && (
+        <span className="flex items-center gap-1.5">
+          <span className="size-2.5 rounded-[2px] bg-gray-400" />
+          Start Difference
         </span>
       )}
     </div>

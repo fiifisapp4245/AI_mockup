@@ -18,6 +18,7 @@ import {
   generateLotPlanningTimelines,
   generateLotTimelines,
   generatePrinterLotChain,
+  type GanttSegment,
 } from "@/lib/mock-data"
 
 const CHAT_SUGGESTIONS = [
@@ -52,13 +53,59 @@ const CHAT_PROMPTS: ChatPrompt[] = [
     answer:
       "Use the Lot Id filter above to isolate a single lot's Production vs Planning bars, or leave it on \"All\" to see every lot chained back-to-back on the printer's timeline.",
   },
+  {
+    keywords: ["start", "offset", "difference", "drift"],
+    answer:
+      "On the Batch/Lot View Timeline, a gold \"Start Difference\" segment appears on whichever row (Production or Planning) starts later for that lot — hover it to see exactly how far apart the two starts are.",
+  },
 ]
+
+// Production and Planning are each their own independently-chained sequence,
+// so the same lot can start at different times in each — one lags the
+// other by however much drift has accumulated so far. Prepends a gold
+// "StartOffset" segment to whichever row starts later, spanning from the
+// earlier row's start up to its own, so hovering it shows exactly how far
+// apart the two starts are.
+function withStartOffset(
+  productionSegments: GanttSegment[],
+  planningSegments: GanttSegment[]
+): { productionSegments: GanttSegment[]; planningSegments: GanttSegment[] } {
+  if (productionSegments.length === 0 || planningSegments.length === 0) {
+    return { productionSegments, planningSegments }
+  }
+
+  const productionStart = new Date(productionSegments[0].start).getTime()
+  const planningStart = new Date(planningSegments[0].start).getTime()
+  if (productionStart === planningStart) {
+    return { productionSegments, planningSegments }
+  }
+
+  const common = {
+    lotId: productionSegments[0].lotId,
+    productId: productionSegments[0].productId,
+    operator: productionSegments[0].operator,
+  }
+
+  const offsetSegment: GanttSegment = {
+    type: "StartOffset",
+    start: new Date(Math.min(productionStart, planningStart)).toISOString(),
+    end: new Date(Math.max(productionStart, planningStart)).toISOString(),
+    ...common,
+  }
+
+  return productionStart > planningStart
+    ? { productionSegments: [offsetSegment, ...productionSegments], planningSegments }
+    : { productionSegments, planningSegments: [offsetSegment, ...planningSegments] }
+}
 
 export default function TimelinePage() {
   const [printer, setPrinter] = React.useState("3")
   const [lotId, setLotId] = React.useState("All")
   const [start, setStart] = React.useState(new Date(2025, 3, 1))
   const [end, setEnd] = React.useState(new Date(2025, 3, 18))
+  const [highlightedLotId, setHighlightedLotId] = React.useState<string | null>(
+    null
+  )
 
   const printerLotChain = React.useMemo(
     () => generatePrinterLotChain(printer),
@@ -110,20 +157,25 @@ export default function TimelinePage() {
           <h2 className="text-sm font-medium">Printer Runtime</h2>
           <GanttLegend showDelta />
         </div>
+        <GanttAxis domainStart={domainStart} domainEnd={domainEnd} />
         <div className="flex flex-col gap-2">
           <span className="text-sm font-medium">{printer}</span>
           <div className="flex flex-col gap-1.5 pl-4">
             <GanttRow
               label="Production"
               segments={printerLotChain.productionSegments}
-              domainStart={printerLotChain.domainStart}
-              domainEnd={printerLotChain.domainEnd}
+              domainStart={domainStart}
+              domainEnd={domainEnd}
+              highlightedKey={highlightedLotId}
+              onHighlightKeyChange={setHighlightedLotId}
             />
             <GanttRow
               label="Planning"
               segments={printerLotChain.planningSegments}
-              domainStart={printerLotChain.domainStart}
-              domainEnd={printerLotChain.domainEnd}
+              domainStart={domainStart}
+              domainEnd={domainEnd}
+              highlightedKey={highlightedLotId}
+              onHighlightKeyChange={setHighlightedLotId}
             />
           </div>
         </div>
@@ -132,7 +184,7 @@ export default function TimelinePage() {
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-medium">Batch/Lot View Timeline</h2>
-          <GanttLegend />
+          <GanttLegend showStartOffset />
         </div>
         <GanttAxis domainStart={domainStart} domainEnd={domainEnd} />
         <div className="flex flex-col gap-2">
@@ -143,21 +195,26 @@ export default function TimelinePage() {
                 (planned) => planned.lotId === lot.lotId
               )
 
+              const { productionSegments, planningSegments } = withStartOffset(
+                lot.segments,
+                planningLot?.segments ?? []
+              )
+
               return (
                 <div key={lot.lotId} className="flex flex-col gap-1.5">
                   <span className="text-sm font-medium">{lot.lotId}</span>
                   <div className="flex flex-col gap-1.5 pl-4">
                     <GanttRow
                       label="Production"
-                      segments={lot.segments}
+                      segments={productionSegments}
                       domainStart={domainStart}
                       domainEnd={domainEnd}
-                      trackWidth={85}
+                      trackWidth={100}
                     />
                     {planningLot && (
                       <GanttRow
                         label="Planning"
-                        segments={planningLot.segments}
+                        segments={planningSegments}
                         domainStart={domainStart}
                         domainEnd={domainEnd}
                         trackWidth={100}

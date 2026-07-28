@@ -74,22 +74,26 @@ const CHAT_PROMPTS: ChatPrompt[] = [
 // (Passing the full underlying series and relying on the axis `domain` to
 // clip it visually was enough to confuse recharts' tick placement when the
 // domain covered only a small slice of a much larger dataset.)
-function clipToWindow<T>(
+// Padding points are clamped to sit exactly at the domain boundary rather
+// than keeping their real (possibly much later/earlier) timestamp — a
+// single point far outside the visible window is enough to throw off
+// recharts' tick placement across the whole axis, even with an explicit
+// `domain` set, so we only ever carry its value across the boundary, never
+// its actual time.
+function clipToWindow<T extends { timestamp: number }>(
   points: T[],
-  getTime: (point: T) => number,
   start: number,
   end: number
 ): T[] {
-  const within = points.filter(
-    (p) => getTime(p) >= start && getTime(p) <= end
-  )
-  const hasStart = within.length > 0 && getTime(within[0]) === start
-  const hasEnd = within.length > 0 && getTime(within[within.length - 1]) === end
+  const within = points.filter((p) => p.timestamp >= start && p.timestamp <= end)
+  const hasStart = within.length > 0 && within[0].timestamp === start
+  const hasEnd = within.length > 0 && within[within.length - 1].timestamp === end
 
-  const before = points.filter((p) => getTime(p) < start)
-  const after = points.filter((p) => getTime(p) > end)
-  const lastBefore = !hasStart && before.length ? [before[before.length - 1]] : []
-  const firstAfter = !hasEnd && after.length ? [after[0]] : []
+  const before = points.filter((p) => p.timestamp < start)
+  const after = points.filter((p) => p.timestamp > end)
+  const lastBefore =
+    !hasStart && before.length ? [{ ...before[before.length - 1], timestamp: start }] : []
+  const firstAfter = !hasEnd && after.length ? [{ ...after[0], timestamp: end }] : []
 
   return [...lastBefore, ...within, ...firstAfter]
 }
@@ -333,7 +337,7 @@ export default function RuntimePage() {
       timestamp: new Date(point.timestamp).getTime(),
       run: point.run * 2,
     }))
-    const clipped = clipToWindow(points, (p) => p.timestamp, domainStart, domainEnd)
+    const clipped = clipToWindow(points, domainStart, domainEnd)
     return fillGrid(clipped, syncGridTimes, (before) => ({ run: before.run }))
   }, [printer, domainStart, domainEnd, syncGridTimes])
 
@@ -360,13 +364,13 @@ export default function RuntimePage() {
   )
 
   const planningData = React.useMemo(() => {
-    const points = generatePlanningRuntimeSeries(printer).map((point) => ({
+    const points = generatePlanningRuntimeSeries().map((point) => ({
       ...point,
       timestamp: new Date(point.timestamp).getTime(),
     }))
-    const clipped = clipToWindow(points, (p) => p.timestamp, domainStart, domainEnd)
+    const clipped = clipToWindow(points, domainStart, domainEnd)
     return fillGrid(clipped, syncGridTimes, (before) => ({ run: before.run }))
-  }, [printer, domainStart, domainEnd, syncGridTimes])
+  }, [domainStart, domainEnd, syncGridTimes])
 
   const planningBuildSpans = React.useMemo(
     () =>
@@ -384,7 +388,7 @@ export default function RuntimePage() {
       ...point,
       timestamp: new Date(point.date).getTime(),
     }))
-    const clipped = clipToWindow(points, (p) => p.timestamp, domainStart, domainEnd)
+    const clipped = clipToWindow(points, domainStart, domainEnd)
     const filled = fillGridLinear(clipped, syncGridTimes)
     // A second, overlaid line drawn only across below-threshold stretches —
     // null everywhere else so it breaks instead of connecting across a
@@ -593,7 +597,7 @@ export default function RuntimePage() {
         </div>
 
         <div className="flex flex-col gap-3 border-t p-4">
-          <h2 className="text-sm font-medium">Topup and Builds by StartTime</h2>
+          <h2 className="text-sm font-medium">Powder Topup by Start Time</h2>
           <ChartContainer
             config={chartConfig}
             className="aspect-auto h-[320px] w-full [&_.recharts-cartesian-axis-tick_text]:fill-foreground [&_.recharts-cartesian-axis-tick_text]:font-semibold"

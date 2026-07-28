@@ -66,14 +66,13 @@ const CHAT_PROMPTS: ChatPrompt[] = [
   {
     keywords: ["maintenance", "downtime", "offline"],
     answer:
-      "The Optimized Schedule of Assets section below adds each printer's recurring maintenance downtime (the gray \"Maintenance\" segments) and re-times every build so none of them overlap a maintenance window — the Planning row goes blank during that window instead of showing a build.",
+      "Each printer's recurring maintenance downtime shows up as a gray \"Maintenance\" row in both sections — the Optimized Schedule of Assets below additionally re-times every build so none of them overlap a maintenance window.",
   },
 ]
 
 type PrinterBundle = {
   printerId: string
   planningSegments: GanttSegment[]
-  optimizedPlanningSegments: GanttSegment[]
   maintenanceSegments: GanttSegment[]
   forecastBuilds: { operator: string; segments: GanttSegment[] }[]
   optimizedBuilds: { operator: string; segments: GanttSegment[] }[]
@@ -181,16 +180,6 @@ export default function AssetUtilizationPage() {
         ],
       }))
 
-      // The optimized builds are already re-timed to skip maintenance, so
-      // flattening every operator's segments back together reconstructs the
-      // printer's full schedule with a genuine gap — not a build — sitting
-      // in each maintenance window.
-      const optimizedPlanningSegments: GanttSegment[] = rawOptimizedBuilds
-        .flatMap((build) => build.segments)
-        .sort(
-          (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
-        )
-
       const maintenanceSegments: GanttSegment[] = maintenanceWindows.map(
         (window) => ({
           type: "Maintenance",
@@ -202,7 +191,6 @@ export default function AssetUtilizationPage() {
       return {
         printerId: id,
         planningSegments,
-        optimizedPlanningSegments,
         maintenanceSegments,
         forecastBuilds,
         optimizedBuilds,
@@ -270,7 +258,7 @@ export default function AssetUtilizationPage() {
         <div className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-medium">Asset Utilization</h2>
-            <GanttLegend showLeave />
+            <GanttLegend showLeave showMaintenance />
           </div>
           <p className="text-xs text-muted-foreground">
             {`Forecasted assignment of the next ${FORECAST_BUILD_COUNT} builds across operators, continuing from where the historical schedule leaves off. Use the date slicer above to narrow the window.`}
@@ -283,9 +271,11 @@ export default function AssetUtilizationPage() {
           <div className="flex flex-col gap-1.5 pl-4">
             {printerBundles.map((bundle) => (
               <GanttRow
-                key={`planning-${bundle.printerId}`}
-                label={showPrinterLabel ? `Planning (${bundle.printerId})` : "Planning"}
-                segments={bundle.planningSegments}
+                key={`maintenance-${bundle.printerId}`}
+                label={
+                  showPrinterLabel ? `Maintenance (${bundle.printerId})` : "Maintenance"
+                }
+                segments={bundle.maintenanceSegments}
                 domainStart={domainStart}
                 domainEnd={domainEnd}
                 labelWidth={LABEL_WIDTH}
@@ -313,8 +303,7 @@ export default function AssetUtilizationPage() {
           <p className="text-xs text-muted-foreground">
             Same forecasted assignment, re-timed around each printer&apos;s
             recurring maintenance downtime so no build ever overlaps a
-            maintenance window — the Planning row sits blank during
-            maintenance instead of showing a build.
+            maintenance window.
           </p>
           <GanttAxis
             domainStart={domainStart}
@@ -329,17 +318,6 @@ export default function AssetUtilizationPage() {
                   showPrinterLabel ? `Maintenance (${bundle.printerId})` : "Maintenance"
                 }
                 segments={bundle.maintenanceSegments}
-                domainStart={domainStart}
-                domainEnd={domainEnd}
-                labelWidth={LABEL_WIDTH}
-                muted
-              />
-            ))}
-            {printerBundles.map((bundle) => (
-              <GanttRow
-                key={`planning-${bundle.printerId}`}
-                label={showPrinterLabel ? `Planning (${bundle.printerId})` : "Planning"}
-                segments={bundle.optimizedPlanningSegments}
                 domainStart={domainStart}
                 domainEnd={domainEnd}
                 labelWidth={LABEL_WIDTH}

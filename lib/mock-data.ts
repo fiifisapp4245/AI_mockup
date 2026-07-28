@@ -106,7 +106,7 @@ export type PowderMassPoint = {
 // How far out the mock production/powder data is generated — both
 // getRuntimeSegments (production) and generatePowderMassSeries (powder
 // mass) tile/derive from this same window.
-const PRODUCTION_DATA_TOTAL_DAYS = 61 // 4/1 - 5/31
+const PRODUCTION_DATA_TOTAL_DAYS = 91 // 4/1 - 6/30
 
 // A full hopper holds 70kg. One refill cycle is 4 segments, each running
 // 10-15 builds before its topup fires: two 30kg topups, one smaller
@@ -118,14 +118,15 @@ const SEGMENTS_PER_CYCLE = 4
 const TOPUP_DURATION_MINUTES = 720 // 12h — long enough to read as a visible slant
 
 // Topups are supposed to fire before mass drops below this threshold —
-// doing so is fine. Roughly 1 in 6 segments instead runs it late, dropping
-// well below threshold first, so a "few occasions" show up as attrition.
+// doing so is fine. Roughly 1 in 4 segments instead runs it late, dropping
+// well below threshold first, so a handful of occasions show up as
+// attrition per printer.
 export const POWDER_TOPUP_THRESHOLD_KG = 20
 const ON_TIME_SEGMENT_END_KG = 24
 const LATE_SEGMENT_END_KG = 10
 
 function isLateSegment(globalSegmentIndex: number): boolean {
-  return globalSegmentIndex % 6 === 3
+  return globalSegmentIndex % 4 === 3
 }
 
 // Segment position 0 and 1 are the two fixed 30kg topups; position 2 is
@@ -292,6 +293,53 @@ const RUNTIME_PROFILES: Record<string, Array<[number, number]>> = {
   ],
 }
 
+// The Batch/Lot Timeline page's per-lot build durations are pulled straight
+// from RUNTIME_PROFILES (the same source the Printer Runtime and Topup page
+// uses) rather than a separately hand-authored list, so both pages always
+// show the same batch durations.
+// Continues a printer's hand-picked lot-number sequence far enough that
+// every build gets its own unique lot ID instead of cycling back through a
+// short list once the tiled build count exceeds it. The step between new
+// IDs is the median gap in the existing sequence (median rather than mean
+// since a couple of these hand-picked sequences have one big one-off jump
+// that would otherwise badly skew the typical step) plus a little
+// deterministic jitter, so the continuation still looks like the same
+// numbering scheme.
+function extendLotIds(existing: string[], count: number, seedPrefix: string): string[] {
+  if (count <= existing.length) return existing.slice(0, count)
+
+  const diffs = existing
+    .slice(1)
+    .map((value, i) => Number(value) - Number(existing[i]))
+    .sort((a, b) => a - b)
+  const mid = Math.floor(diffs.length / 2)
+  const medianDiff =
+    diffs.length % 2 === 0 ? (diffs[mid - 1] + diffs[mid]) / 2 : diffs[mid]
+  const avgStep = Math.max(1, Math.round(medianDiff))
+
+  const ids = [...existing]
+  let current = Number(existing[existing.length - 1])
+
+  for (let i = existing.length; i < count; i++) {
+    const jitter = Math.round(
+      (seededFraction(`${seedPrefix}-lotid-${i}`) - 0.5) * avgStep * 0.6
+    )
+    current += avgStep + jitter
+    ids.push(String(current))
+  }
+
+  return ids
+}
+
+function getRuntimeBuildHours(printerId: string): number[] {
+  // Tiled (not the raw single hand-authored cycle) so the Batch/Lot
+  // Timeline page has as many lots as the Printer Runtime and Topup page
+  // has builds, instead of stopping after one short cycle.
+  return getRuntimeSegments(printerId)
+    .filter(([, run]) => run === 1)
+    .map(([hours]) => hours)
+}
+
 // Tiles each printer's hand-authored build/idle pattern back-to-back until
 // it covers PRODUCTION_DATA_TOTAL_DAYS, so widening the date filter reveals
 // more real production history instead of running dry after ~10 days.
@@ -374,11 +422,21 @@ export type GanttSegment = {
     | "Ahead"
     | "Leave"
     | "Maintenance"
+    | "StartOffset"
   start: string
   end: string
   lotId?: string
   productId?: string
   operator?: string
+  // Identifies which build occurrence a segment belongs to, for pairing
+  // Production/Planning segments that share the same lotId — lot numbers
+  // cycle back around once a printer's short lotId list is exhausted, so
+  // lotId alone isn't unique enough once the chain runs past a handful of
+  // builds.
+  groupKey?: string
+  // Why a build or changeover ran long — only set on Overrun/BuildOverrun
+  // segments.
+  reason?: string
 }
 
 type PrinterProfile = {
@@ -405,23 +463,23 @@ const SHARED_OPERATORS = [
   "Fiachra Brennan",
 ]
 
-// Each printer's actual build hours mostly match its planned build hours
-// (the same 12h/15h/18h cycle as getPlannedBuildHours) index-for-index —
-// production only meaningfully overruns on a couple of builds, not the
-// majority, so most lots show a clean matched bar rather than a large gap.
 const PRINTER_PROFILES: Record<string, PrinterProfile> = {
   "1": {
-    buildHours: [12, 15, 23, 12, 15, 18, 12, 20, 18, 12],
+    buildHours: getRuntimeBuildHours("1"),
     changeOverHours: 6,
-    lotIds: [
-      "5501120",
-      "5501144",
-      "5501167",
-      "5501190",
-      "5501212",
-      "5501235",
-      "5501258",
-    ],
+    lotIds: extendLotIds(
+      [
+        "5501120",
+        "5501144",
+        "5501167",
+        "5501190",
+        "5501212",
+        "5501235",
+        "5501258",
+      ],
+      getRuntimeBuildHours("1").length,
+      "1"
+    ),
     productIds: [
       "PRD-10142",
       "PRD-10156",
@@ -437,17 +495,21 @@ const PRINTER_PROFILES: Record<string, PrinterProfile> = {
     operators: SHARED_OPERATORS,
   },
   "2": {
-    buildHours: [12, 15, 18, 12, 19, 18, 12, 15, 18, 18, 15],
+    buildHours: getRuntimeBuildHours("2"),
     changeOverHours: 7,
-    lotIds: [
-      "6602201",
-      "6602223",
-      "6602245",
-      "6602267",
-      "6602289",
-      "6602301",
-      "6602323",
-    ],
+    lotIds: extendLotIds(
+      [
+        "6602201",
+        "6602223",
+        "6602245",
+        "6602267",
+        "6602289",
+        "6602301",
+        "6602323",
+      ],
+      getRuntimeBuildHours("2").length,
+      "2"
+    ),
     productIds: [
       "PRD-20305",
       "PRD-20319",
@@ -464,17 +526,21 @@ const PRINTER_PROFILES: Record<string, PrinterProfile> = {
     operators: SHARED_OPERATORS,
   },
   "3": {
-    buildHours: [12, 15, 18, 12, 15, 23, 12, 15, 18, 12, 19, 18, 12],
+    buildHours: getRuntimeBuildHours("3"),
     changeOverHours: 8,
-    lotIds: [
-      "2246447",
-      "4775614",
-      "4776612",
-      "4776999",
-      "4777011",
-      "4777006",
-      "4777008",
-    ],
+    lotIds: extendLotIds(
+      [
+        "2246447",
+        "4775614",
+        "4776612",
+        "4776999",
+        "4777011",
+        "4777006",
+        "4777008",
+      ],
+      getRuntimeBuildHours("3").length,
+      "3"
+    ),
     productIds: [
       "PRD-30112",
       "PRD-30126",
@@ -531,20 +597,18 @@ function getPrinterBuildPairs(printerId: string): BuildPair[] {
   let cursor = start
 
   buildHours.forEach((hours, index) => {
-    // Actual builds run a little faster than the nominal plan: trim 1-2h.
-    const actualHours = Math.max(hours - (1 + (index % 2)), 1)
     const co = index === buildHours.length - 1 ? 0 : changeOverHours
 
     pairs.push({
       start: new Date(cursor),
-      actualHours,
+      actualHours: hours,
       changeOverHours: co,
       lotId: lotIds[index % lotIds.length],
       productId: productIds[index % productIds.length],
       operator: operators[index % operators.length],
     })
 
-    cursor = addHours(cursor, actualHours + co)
+    cursor = addHours(cursor, hours + co)
   })
 
   return pairs
@@ -557,126 +621,119 @@ export type PrinterLotChain = {
   domainEnd: number
 }
 
-// One continuous horizontal line per row: lot 1's Production and Planning
-// builds start together at the same point, lot 2's start right after where
-// lot 1 ended, and so on — so both rows read left to right as build 1,
-// build 2, build 3... with every lot's start aligned between the two rows.
-//
-// Each lot is compared in two independent stages, since conflating them was
-// hiding good outcomes: the BUILD portions are compared against each other
-// (production's actual build vs. the planned build) to decide Ahead/green
-// vs. Overrun/amber for that stage, then — separately — the CHANGEOVER
-// portions are compared the same way. A production build that beat its
-// plan now shows green even when its (much longer) changeover afterward
-// still runs over the planned 2h changeover.
+// Plausible causes for a build or changeover running past its planned
+// reference — picked deterministically per lot so the same lot always
+// shows the same reason.
+const BUILD_OVERRUN_REASONS = [
+  "Support structure failure required a reprint segment",
+  "Layer adhesion issue slowed the build",
+  "Powder feed inconsistency",
+  "Print head recalibration mid-build",
+  "Unexpected geometry complexity",
+  "Recoater blade jam",
+]
+const CHANGEOVER_OVERRUN_REASONS = [
+  "Extended post-processing",
+  "Powder removal and recovery delay",
+  "Build plate replacement",
+  "Quality inspection hold",
+  "Chamber cleaning required",
+  "Operator changeover",
+]
+
+function pickReason(reasons: string[], seed: string): string {
+  const index = Math.floor(seededFraction(seed) * reasons.length)
+  return reasons[Math.min(index, reasons.length - 1)]
+}
+
+// Production and Planning are each their own independent, gap-free chain —
+// Planning always at its own clean, uninterrupted pace (just Build +
+// ChangeOver, lot after lot), Production at its own real pace (which runs
+// longer overall, since real changeovers exceed the fixed 2h planning
+// reference and a few builds overrun their plan). Rather than padding
+// Planning out to match Production lot-by-lot, any time Production's build
+// or changeover exceeds its planned reference, that extra time is colored
+// directly onto Production's own bar — attached right after the portion
+// that matches plan — so the delta stays visually anchored to the segment
+// it actually belongs to.
 export function generatePrinterLotChain(printerId: string = "3"): PrinterLotChain {
   const anchor = new Date(2025, 3, 1)
   const productionSegments: GanttSegment[] = []
-  const planningSegments: GanttSegment[] = []
-  let cursor = anchor
+  let productionEnd = anchor
 
-  getPrinterBuildPairs(printerId).forEach(
-    ({ actualHours, changeOverHours, lotId, productId, operator }, index) => {
-      const plannedBuildHours = getPlannedBuildHours(index)
-      const lotStart = new Date(cursor)
-      const common = { lotId, productId, operator }
+  getPrinterBuildPairs(printerId)
+    .slice(0, BATCH_LOT_TIMELINE_LOT_LIMIT)
+    .forEach(
+      ({ start, actualHours, changeOverHours, lotId, productId, operator }, index) => {
+        const plannedBuildHours = getPlannedBuildHours(index)
+        const common = { lotId, productId, operator, groupKey: String(index) }
 
-      // Stage 1: build vs. planned build.
-      const maxBuildHours = Math.max(actualHours, plannedBuildHours)
-      const buildEnd = addHours(lotStart, actualHours)
-      productionSegments.push({
-        type: "Build",
-        start: lotStart.toISOString(),
-        end: buildEnd.toISOString(),
-        ...common,
-      })
-      const prodBuildPhaseEnd = addHours(lotStart, maxBuildHours)
-      if (actualHours < maxBuildHours) {
+        const buildRefHours = Math.min(actualHours, plannedBuildHours)
+        const buildRefEnd = addHours(start, buildRefHours)
         productionSegments.push({
-          type: "Ahead",
-          start: buildEnd.toISOString(),
-          end: prodBuildPhaseEnd.toISOString(),
+          type: "Build",
+          start: start.toISOString(),
+          end: buildRefEnd.toISOString(),
           ...common,
         })
-      }
-
-      const planBuildEnd = addHours(lotStart, plannedBuildHours)
-      planningSegments.push({
-        type: "Build",
-        start: lotStart.toISOString(),
-        end: planBuildEnd.toISOString(),
-        ...common,
-      })
-      const planBuildPhaseEnd = addHours(lotStart, maxBuildHours)
-      if (plannedBuildHours < maxBuildHours) {
-        planningSegments.push({
-          type: "BuildOverrun",
-          start: planBuildEnd.toISOString(),
-          end: planBuildPhaseEnd.toISOString(),
-          ...common,
-        })
-      }
-
-      // Stage 2: changeover vs. planned changeover — both start from the
-      // now-synced end of stage 1.
-      const maxChangeOverHours = Math.max(
-        changeOverHours,
-        PLANNING_CHANGEOVER_HOURS
-      )
-
-      let prodCycleEnd = prodBuildPhaseEnd
-      if (changeOverHours > 0) {
-        const prodChangeOverEnd = addHours(prodBuildPhaseEnd, changeOverHours)
-        productionSegments.push({
-          type: "ChangeOver",
-          start: prodBuildPhaseEnd.toISOString(),
-          end: prodChangeOverEnd.toISOString(),
-          ...common,
-        })
-        prodCycleEnd = prodChangeOverEnd
-        if (changeOverHours < maxChangeOverHours) {
-          const fillEnd = addHours(prodBuildPhaseEnd, maxChangeOverHours)
+        const buildEnd = addHours(start, actualHours)
+        if (actualHours > plannedBuildHours) {
+          productionSegments.push({
+            type: "BuildOverrun",
+            start: buildRefEnd.toISOString(),
+            end: buildEnd.toISOString(),
+            ...common,
+            reason: pickReason(BUILD_OVERRUN_REASONS, `${lotId}-${index}-build`),
+          })
+        } else if (actualHours < plannedBuildHours) {
           productionSegments.push({
             type: "Ahead",
-            start: prodChangeOverEnd.toISOString(),
-            end: fillEnd.toISOString(),
+            start: buildEnd.toISOString(),
+            end: addHours(start, plannedBuildHours).toISOString(),
             ...common,
           })
-          prodCycleEnd = fillEnd
         }
-      }
 
-      const planChangeOverEnd = addHours(
-        planBuildPhaseEnd,
-        PLANNING_CHANGEOVER_HOURS
-      )
-      planningSegments.push({
-        type: "ChangeOver",
-        start: planBuildPhaseEnd.toISOString(),
-        end: planChangeOverEnd.toISOString(),
-        ...common,
-      })
-      let planCycleEnd = planChangeOverEnd
-      if (PLANNING_CHANGEOVER_HOURS < maxChangeOverHours) {
-        const fillEnd = addHours(planBuildPhaseEnd, maxChangeOverHours)
-        planningSegments.push({
-          type: "Overrun",
-          start: planChangeOverEnd.toISOString(),
-          end: fillEnd.toISOString(),
-          ...common,
-        })
-        planCycleEnd = fillEnd
-      }
+        const changeOverRefHours = Math.min(changeOverHours, PLANNING_CHANGEOVER_HOURS)
+        const changeOverRefEnd = addHours(buildEnd, changeOverRefHours)
+        const changeOverEnd = addHours(buildEnd, changeOverHours)
+        if (changeOverHours > 0) {
+          productionSegments.push({
+            type: "ChangeOver",
+            start: buildEnd.toISOString(),
+            end: changeOverRefEnd.toISOString(),
+            ...common,
+          })
+          if (changeOverHours > PLANNING_CHANGEOVER_HOURS) {
+            productionSegments.push({
+              type: "Overrun",
+              start: changeOverRefEnd.toISOString(),
+              end: changeOverEnd.toISOString(),
+              ...common,
+              reason: pickReason(
+                CHANGEOVER_OVERRUN_REASONS,
+                `${lotId}-${index}-changeover`
+              ),
+            })
+          }
+        }
 
-      cursor = new Date(Math.max(prodCycleEnd.getTime(), planCycleEnd.getTime()))
-    }
+        productionEnd = changeOverEnd
+      }
+    )
+
+  const planningSegments = generateLotPlanningTimelines(printerId).flatMap(
+    (lot) => lot.segments
   )
+  const planningEnd = planningSegments.length
+    ? new Date(planningSegments[planningSegments.length - 1].end)
+    : anchor
 
   return {
     productionSegments,
     planningSegments,
     domainStart: anchor.getTime(),
-    domainEnd: cursor.getTime(),
+    domainEnd: Math.max(productionEnd.getTime(), planningEnd.getTime()),
   }
 }
 
@@ -972,17 +1029,15 @@ export function generateForecastPlanningSegments(
 // production build, chained back-to-back into a single continuous series: 1
 // while the plan has the printer running, 0 during its changeover, with no
 // time gaps between cycles.
-export function generatePlanningRuntimeSeries(
-  printerId: string = "3"
-): RuntimePoint[] {
+export function generatePlanningRuntimeSeries(): RuntimePoint[] {
   const start = new Date(2025, 3, 1, 0, 0)
-  const segments = getRuntimeSegments(printerId)
-  const buildCount = segments.filter(([, run]) => run === 1).length
+  const targetEnd = addDays(start, PRODUCTION_DATA_TOTAL_DAYS)
 
   const points: RuntimePoint[] = []
   let cursor = start
+  let i = 0
 
-  for (let i = 0; i < buildCount; i++) {
+  while (cursor < targetEnd) {
     const buildStart = cursor
     const buildEnd = addHours(buildStart, getPlannedBuildHours(i))
     const changeOverEnd = addHours(buildEnd, PLANNING_CHANGEOVER_HOURS)
@@ -996,6 +1051,7 @@ export function generatePlanningRuntimeSeries(
     })
 
     cursor = changeOverEnd
+    i++
   }
 
   return points
@@ -1008,14 +1064,14 @@ export function generatePlanningBuildSpans(
   printerId: string = "3"
 ): TimeSpan[] {
   const start = new Date(2025, 3, 1, 0, 0)
-  const segments = getRuntimeSegments(printerId)
-  const buildCount = segments.filter(([, run]) => run === 1).length
+  const targetEnd = addDays(start, PRODUCTION_DATA_TOTAL_DAYS)
   const { lotIds, productIds } = getPrinterProfile(printerId)
 
   const spans: TimeSpan[] = []
   let cursor = start
+  let i = 0
 
-  for (let i = 0; i < buildCount; i++) {
+  while (cursor < targetEnd) {
     const buildStart = cursor
     const buildEnd = addHours(buildStart, getPlannedBuildHours(i))
     spans.push({
@@ -1025,6 +1081,7 @@ export function generatePlanningBuildSpans(
       productId: productIds[i % productIds.length],
     })
     cursor = addHours(buildEnd, PLANNING_CHANGEOVER_HOURS)
+    i++
   }
 
   return spans
@@ -1055,6 +1112,8 @@ function generateChainedLotTimelines(
     const changeOverEnd = addHours(buildEnd, changeOverHours)
     cursor = changeOverEnd
 
+    const groupKey = String(index)
+
     return {
       lotId,
       segments: [
@@ -1065,6 +1124,7 @@ function generateChainedLotTimelines(
           lotId,
           productId,
           operator,
+          groupKey,
         },
         {
           type: "ChangeOver",
@@ -1073,15 +1133,29 @@ function generateChainedLotTimelines(
           lotId,
           productId,
           operator,
+          groupKey,
         },
       ],
     }
   })
 }
 
+// The Batch/Lot Timeline page shows every lot as its own row, so it's
+// capped to the first 15 — the full (much longer) history is still what
+// drives the Printer Runtime and Topup page and Asset Utilization's
+// forecast continuation point.
+const BATCH_LOT_TIMELINE_LOT_LIMIT = 15
+
 export function generateLotTimelines(printerId: string = "3"): LotTimeline[] {
-  const { lotIds, productIds, operators } = getPrinterProfile(printerId)
-  return generateChainedLotTimelines(lotIds, productIds, operators, 18, 8)
+  const { lotIds, productIds, operators, buildHours, changeOverHours } =
+    getPrinterProfile(printerId)
+  return generateChainedLotTimelines(
+    lotIds.slice(0, BATCH_LOT_TIMELINE_LOT_LIMIT),
+    productIds,
+    operators,
+    (index) => buildHours[index % buildHours.length],
+    changeOverHours
+  )
 }
 
 export function generateLotPlanningTimelines(
@@ -1089,7 +1163,7 @@ export function generateLotPlanningTimelines(
 ): LotTimeline[] {
   const { lotIds, productIds, operators } = getPrinterProfile(printerId)
   return generateChainedLotTimelines(
-    lotIds,
+    lotIds.slice(0, BATCH_LOT_TIMELINE_LOT_LIMIT),
     productIds,
     operators,
     getPlannedBuildHours,
