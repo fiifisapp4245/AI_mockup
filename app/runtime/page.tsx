@@ -26,13 +26,19 @@ import {
 import {
   generatePlanningBuildSpans,
   generatePlanningRuntimeSeries,
-  generateRuntimeBuildBoundaries,
+  generatePowderMassSeries,
   generateRuntimeBuildSpans,
   generateRuntimeSeries,
-  generateTopupSeries,
+  POWDER_TOPUP_THRESHOLD_KG,
 } from "@/lib/mock-data"
 
 const SYNC_ID = "printer-runtime-topup"
+
+// Hovering a Production or Planning build band highlights both it and its
+// linked counterpart (same build index) in this color — deliberately not
+// red or green, since those are already used elsewhere for behind-schedule
+// vs. ahead-of-plan.
+const LINKED_BUILD_HIGHLIGHT = "#a855f7"
 
 const CHAT_SUGGESTIONS = [
   "How is production tracking against planning?",
@@ -42,19 +48,19 @@ const CHAT_SUGGESTIONS = [
 
 const CHAT_PROMPTS: ChatPrompt[] = [
   {
-    keywords: ["topup", "top-up", "top up"],
+    keywords: ["topup", "top-up", "top up", "powder", "mass", "kg"],
     answer:
-      "The Topup chart tracks material top-ups alongside total build starts over time — spikes in the topup line usually line up with a new build starting on the Printer Runtime chart above it.",
+      "The powder hopper starts full at 70kg and drains build-by-build — each vertical jump back up to 70kg is a topup, which happens roughly every 25-30 builds.",
   },
   {
     keywords: ["compare", "comparison", "vs", "versus", "planning", "plan"],
     answer:
-      "The Production and Planning lines are synced on the same time axis — toggle either series off with the legend buttons to isolate one, or hover anywhere to compare both charts at that exact timestamp.",
+      "Production sits one lane above Planning on the Printer Runtime chart (both drop to the baseline during changeover) so the two step lines don't overlap — toggle either series off with the legend buttons to isolate one, or click a shaded build band to highlight it alongside its linked Production/Planning counterpart.",
   },
   {
     keywords: ["longest", "build", "duration", "run"],
     answer:
-      "Build boundaries are marked with dashed vertical lines across both charts. Wider shaded bands between boundaries indicate longer-running builds — check the Batch/Lot Timeline page for exact per-lot durations.",
+      "Wider shaded bands on the Printer Runtime chart indicate longer-running builds — hover one to see its exact lot, start, end, and duration, or check the Batch/Lot Timeline page for the full per-lot breakdown.",
   },
   {
     keywords: ["printer"],
@@ -112,6 +118,52 @@ function fillGrid<T extends { timestamp: number }>(
       else break
     }
     additions.push({ timestamp: t, ...valueFieldsAt(before) } as T)
+  }
+
+  return [...points, ...additions].sort((a, b) => a.timestamp - b.timestamp)
+}
+
+// Same purpose as fillGrid (exact-matching timestamps for cross-chart
+// tooltip sync), but for a smooth diagonal series instead of a step
+// function — an inserted grid point is linearly interpolated between its
+// surrounding real points instead of holding the earlier one flat, so it
+// lands exactly on the existing line instead of introducing a fake stair
+// step.
+function fillGridLinear<T extends { timestamp: number; massKg: number; belowThreshold: boolean }>(
+  points: T[],
+  gridTimes: number[]
+): T[] {
+  if (points.length === 0) return points
+  const existing = new Set(points.map((p) => p.timestamp))
+  const additions: T[] = []
+
+  for (const t of gridTimes) {
+    if (existing.has(t)) continue
+    if (t < points[0].timestamp || t > points[points.length - 1].timestamp) continue
+
+    let before = points[0]
+    let after = points[points.length - 1]
+    for (const p of points) {
+      if (p.timestamp <= t) before = p
+      if (p.timestamp >= t) {
+        after = p
+        break
+      }
+    }
+
+    const massKg =
+      after.timestamp === before.timestamp
+        ? before.massKg
+        : before.massKg +
+          ((t - before.timestamp) / (after.timestamp - before.timestamp)) *
+            (after.massKg - before.massKg)
+
+    additions.push({
+      ...before,
+      timestamp: t,
+      massKg,
+      belowThreshold: massKg < POWDER_TOPUP_THRESHOLD_KG,
+    })
   }
 
   return [...points, ...additions].sort((a, b) => a.timestamp - b.timestamp)
@@ -239,13 +291,9 @@ const chartConfig = {
     label: "Planning",
     color: "var(--chart-3)",
   },
-  topup: {
-    label: "Topup",
+  massKg: {
+    label: "Mass of Powder (kg)",
     color: "var(--chart-1)",
-  },
-  totalBuilds: {
-    label: "Total Builds",
-    color: "var(--chart-3)",
   },
 } satisfies ChartConfig
 
@@ -276,22 +324,29 @@ export default function RuntimePage() {
     return times
   }, [domainStart, domainEnd])
 
+  // Production is drawn one lane above Planning (2 vs. 1, both falling to 0
+  // during changeover) so the two step lines don't sit directly on top of
+  // each other.
   const data = React.useMemo(() => {
     const points = generateRuntimeSeries(printer).map((point) => ({
       ...point,
       timestamp: new Date(point.timestamp).getTime(),
+      run: point.run * 2,
     }))
     const clipped = clipToWindow(points, (p) => p.timestamp, domainStart, domainEnd)
     return fillGrid(clipped, syncGridTimes, (before) => ({ run: before.run }))
   }, [printer, domainStart, domainEnd, syncGridTimes])
 
-  const buildBoundaries = React.useMemo(
-    () =>
-      generateRuntimeBuildBoundaries(printer).map((timestamp) =>
-        new Date(timestamp).getTime()
-      ),
-    [printer]
-  )
+  // Which build index (shared between the production and planning span
+  // arrays) is currently selected — clicking either side of the link
+  // highlights both; clicking the same one again clears the selection.
+  const [selectedBuildIndex, setSelectedBuildIndex] = React.useState<
+    number | null
+  >(null)
+
+  const toggleSelectedBuildIndex = (index: number) => {
+    setSelectedBuildIndex((prev) => (prev === index ? null : index))
+  }
 
   const productionBuildSpans = React.useMemo(
     () =>
@@ -324,16 +379,19 @@ export default function RuntimePage() {
     [printer]
   )
 
-  const topupData = React.useMemo(() => {
-    const points = generateTopupSeries(printer).map((point) => ({
+  const powderMassData = React.useMemo(() => {
+    const points = generatePowderMassSeries(printer).map((point) => ({
       ...point,
       timestamp: new Date(point.date).getTime(),
     }))
     const clipped = clipToWindow(points, (p) => p.timestamp, domainStart, domainEnd)
-    return fillGrid(clipped, syncGridTimes, (before) => ({
-      date: before.date,
-      topup: before.topup,
-      totalBuilds: before.totalBuilds,
+    const filled = fillGridLinear(clipped, syncGridTimes)
+    // A second, overlaid line drawn only across below-threshold stretches —
+    // null everywhere else so it breaks instead of connecting across a
+    // whole on-time run — to recolor just those segments red.
+    return filled.map((point) => ({
+      ...point,
+      alertMassKg: point.belowThreshold ? point.massKg : null,
     }))
   }, [printer, domainStart, domainEnd, syncGridTimes])
 
@@ -420,13 +478,9 @@ export default function RuntimePage() {
               margin={{ left: 12, right: 12 }}
             >
               <defs>
-                <linearGradient id="productionAreaA" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id="productionArea" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor="var(--chart-1)" stopOpacity={0.35} />
                   <stop offset="100%" stopColor="var(--chart-1)" stopOpacity={0} />
-                </linearGradient>
-                <linearGradient id="productionAreaB" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--chart-2)" stopOpacity={0.35} />
-                  <stop offset="100%" stopColor="var(--chart-2)" stopOpacity={0} />
                 </linearGradient>
                 <linearGradient id="planningAreaA" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor="var(--chart-3)" stopOpacity={0.35} />
@@ -451,8 +505,8 @@ export default function RuntimePage() {
               />
               <YAxis
                 dataKey="run"
-                domain={[0, 1]}
-                ticks={[0, 1]}
+                domain={[0, 2]}
+                ticks={[0, 1, 2]}
                 tickLine={false}
                 axisLine={false}
                 width={30}
@@ -473,15 +527,19 @@ export default function RuntimePage() {
                     key={`prod-area-${index}`}
                     x1={span.start}
                     x2={span.end}
-                    y1={0}
-                    y2={1}
+                    y1={1}
+                    y2={2}
                     fill={
-                      index % 2 === 0
-                        ? "url(#productionAreaA)"
-                        : "url(#productionAreaB)"
+                      selectedBuildIndex === index
+                        ? LINKED_BUILD_HIGHLIGHT
+                        : "url(#productionArea)"
                     }
-                    stroke="none"
+                    fillOpacity={selectedBuildIndex === index ? 0.55 : undefined}
+                    stroke={selectedBuildIndex === index ? LINKED_BUILD_HIGHLIGHT : "none"}
+                    strokeWidth={selectedBuildIndex === index ? 1.5 : undefined}
                     ifOverflow="hidden"
+                    style={{ cursor: "pointer" }}
+                    onClick={() => toggleSelectedBuildIndex(index)}
                   />
                 ))}
               {visibleSeries.planning &&
@@ -493,22 +551,18 @@ export default function RuntimePage() {
                     y1={0}
                     y2={1}
                     fill={
-                      index % 2 === 0
-                        ? "url(#planningAreaA)"
-                        : "url(#planningAreaB)"
+                      selectedBuildIndex === index
+                        ? LINKED_BUILD_HIGHLIGHT
+                        : index % 2 === 0
+                          ? "url(#planningAreaA)"
+                          : "url(#planningAreaB)"
                     }
-                    stroke="none"
+                    fillOpacity={selectedBuildIndex === index ? 0.55 : undefined}
+                    stroke={selectedBuildIndex === index ? LINKED_BUILD_HIGHLIGHT : "none"}
+                    strokeWidth={selectedBuildIndex === index ? 1.5 : undefined}
                     ifOverflow="hidden"
-                  />
-                ))}
-              {visibleSeries.production &&
-                buildBoundaries.map((timestamp) => (
-                  <ReferenceLine
-                    key={timestamp}
-                    x={timestamp}
-                    stroke="var(--muted-foreground)"
-                    strokeDasharray="4 4"
-                    strokeOpacity={0.6}
+                    style={{ cursor: "pointer" }}
+                    onClick={() => toggleSelectedBuildIndex(index)}
                   />
                 ))}
               {visibleSeries.planning && (
@@ -547,8 +601,8 @@ export default function RuntimePage() {
             <LineChart
               syncId={SYNC_ID}
               syncMethod="value"
-              data={topupData}
-              margin={{ left: 12, right: 12 }}
+              data={powderMassData}
+              margin={{ left: 20, right: 12 }}
             >
               <CartesianGrid vertical={false} strokeDasharray="3 3" />
               <XAxis
@@ -563,39 +617,50 @@ export default function RuntimePage() {
                 interval={0}
               />
               <YAxis
-                dataKey="topup"
-                domain={[0, 3]}
-                ticks={[0, 1, 2, 3]}
+                dataKey="massKg"
+                domain={[0, 70]}
+                ticks={[0, 35, 70]}
                 tickLine={false}
                 axisLine={false}
-                width={30}
+                width={40}
+                label={{
+                  value: "Mass of powder (kg)",
+                  angle: -90,
+                  position: "insideLeft",
+                  style: { textAnchor: "middle", fill: "var(--muted-foreground)" },
+                }}
               />
               <ChartTooltip
                 content={
                   <ChartTooltipContent labelFormatter={tooltipLabelFormatter} />
                 }
               />
-              {visibleSeries.production &&
-                buildBoundaries.map((timestamp) => (
-                  <ReferenceLine
-                    key={timestamp}
-                    x={timestamp}
-                    stroke="var(--muted-foreground)"
-                    strokeDasharray="4 4"
-                    strokeOpacity={0.6}
-                  />
-                ))}
+              <ReferenceLine
+                y={POWDER_TOPUP_THRESHOLD_KG}
+                stroke="var(--destructive)"
+                strokeDasharray="4 4"
+                strokeOpacity={0.6}
+                label={{
+                  value: "Topup threshold",
+                  position: "insideBottomLeft",
+                  fill: "var(--destructive)",
+                  fontSize: 11,
+                }}
+              />
               <Line
-                type="stepAfter"
-                dataKey="topup"
-                stroke="var(--color-topup)"
+                type="linear"
+                dataKey="massKg"
+                stroke="var(--color-massKg)"
                 strokeWidth={2}
                 dot={false}
               />
               <Line
-                dataKey="totalBuilds"
-                stroke="none"
+                type="linear"
+                dataKey="alertMassKg"
+                stroke="var(--destructive)"
+                strokeWidth={2}
                 dot={false}
+                connectNulls={false}
                 isAnimationActive={false}
                 legendType="none"
               />

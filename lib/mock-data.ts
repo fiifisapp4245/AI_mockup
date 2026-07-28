@@ -91,76 +91,135 @@ function addHours(date: Date, hours: number) {
   return result
 }
 
-export type TopupPoint = { date: string; topup: number; totalBuilds: number }
-
-// One cycle: hold at 0 for a stretch, then step up through 1, 2, 3 (each
-// held for a stretch), then drop back to 0 and repeat. Longer per-level
-// durations mean fewer complete cycles fit in the same date range.
-const TOPUP_CYCLE_PROFILES: Record<string, Array<{ level: number; days: number }>> = {
-  "1": [
-    { level: 0, days: 4 },
-    { level: 1, days: 5 },
-    { level: 2, days: 6 },
-    { level: 3, days: 5 },
-  ],
-  "2": [
-    { level: 0, days: 3 },
-    { level: 1, days: 4 },
-    { level: 2, days: 5 },
-    { level: 3, days: 4 },
-  ],
-  "3": [
-    { level: 0, days: 2 },
-    { level: 1, days: 3 },
-    { level: 2, days: 4 },
-    { level: 3, days: 3 },
-  ],
+function addMinutes(date: Date, minutes: number) {
+  const result = new Date(date)
+  result.setMinutes(result.getMinutes() + minutes)
+  return result
 }
 
-const TOPUP_TOTAL_DAYS = 61 // 4/1 - 5/31
-
-type TopupStep = {
-  level: number
-  startDay: number
-  days: number
+export type PowderMassPoint = {
+  date: string
+  massKg: number
+  belowThreshold: boolean
 }
 
-function getTopupSteps(printerId: string): TopupStep[] {
-  const cycle = TOPUP_CYCLE_PROFILES[printerId] ?? TOPUP_CYCLE_PROFILES["3"]
-  const steps: TopupStep[] = []
-  let day = 0
-  let cycleIndex = 0
+// How far out the mock production/powder data is generated — both
+// getRuntimeSegments (production) and generatePowderMassSeries (powder
+// mass) tile/derive from this same window.
+const PRODUCTION_DATA_TOTAL_DAYS = 61 // 4/1 - 5/31
 
-  while (day < TOPUP_TOTAL_DAYS) {
-    const { level, days } = cycle[cycleIndex % cycle.length]
-    const stepDays = Math.min(days, TOPUP_TOTAL_DAYS - day)
+// A full hopper holds 70kg. One refill cycle is 4 segments, each running
+// 10-15 builds before its topup fires: two 30kg topups, one smaller
+// 15-20kg topup (varies slightly cycle to cycle), then a full refill back
+// to 70kg.
+const POWDER_FULL_KG = 70
+const SEGMENT_BUILD_COUNTS = [10, 14, 12, 15, 11, 13]
+const SEGMENTS_PER_CYCLE = 4
+const TOPUP_DURATION_MINUTES = 720 // 12h — long enough to read as a visible slant
 
-    steps.push({ level, startDay: day, days: stepDays })
+// Topups are supposed to fire before mass drops below this threshold —
+// doing so is fine. Roughly 1 in 6 segments instead runs it late, dropping
+// well below threshold first, so a "few occasions" show up as attrition.
+export const POWDER_TOPUP_THRESHOLD_KG = 20
+const ON_TIME_SEGMENT_END_KG = 24
+const LATE_SEGMENT_END_KG = 10
 
-    day += stepDays
-    cycleIndex++
+function isLateSegment(globalSegmentIndex: number): boolean {
+  return globalSegmentIndex % 6 === 3
+}
+
+// Segment position 0 and 1 are the two fixed 30kg topups; position 2 is
+// the smaller, slightly variable 15-20kg topup. Position 3 (the last in
+// the cycle) triggers a full refill instead, handled separately.
+function getTopupAmount(positionInCycle: number, cycleIndex: number): number {
+  if (positionInCycle === 2) {
+    return 15 + seededFraction(`topup3-${cycleIndex}`) * 5
   }
-
-  return steps
+  return 30
 }
 
-// Total builds completed within each topup step, before the build moves on
-// to the next topup level. Kept in the 25-30 range.
-const STEP_BUILD_COUNTS = [25, 29, 27, 30, 26, 28]
+// One point per segment boundary rather than one per build, connected with
+// straight ("linear") lines — a single clean diagonal decline per segment
+// instead of a per-build staircase. Each topup is its own short diagonal
+// ramp (TOPUP_DURATION_MINUTES) rather than an instant vertical jump. When
+// a segment runs late (mass would cross the threshold before its topup),
+// an extra point is inserted exactly at the threshold crossing so the
+// below-threshold portion can be drawn as its own segment.
+export function generatePowderMassSeries(printerId: string = "3"): PowderMassPoint[] {
+  const builds = generateRuntimeBuildSpans(printerId)
+  const points: PowderMassPoint[] = []
+  if (builds.length === 0) return points
 
-export function generateTopupSeries(printerId: string = "3"): TopupPoint[] {
-  const start = new Date(2025, 3, 1)
-  const points: TopupPoint[] = []
+  points.push({
+    date: builds[0].start,
+    massKg: POWDER_FULL_KG,
+    belowThreshold: false,
+  })
 
-  getTopupSteps(printerId).forEach(({ level, startDay, days }, stepIndex) => {
-    const totalBuilds = STEP_BUILD_COUNTS[stepIndex % STEP_BUILD_COUNTS.length]
+  let mass = POWDER_FULL_KG
+  let globalSegmentIndex = 0
+  let cycleIndex = 0
+  let positionInCycle = 0
+  let segmentLength = SEGMENT_BUILD_COUNTS[0]
+  let segmentEndTarget = isLateSegment(0) ? LATE_SEGMENT_END_KG : ON_TIME_SEGMENT_END_KG
+  let buildsIntoSegment = 0
+  let segmentStartTime = new Date(builds[0].start)
 
-    for (let i = 0; i < days; i++) {
+  builds.forEach((build) => {
+    buildsIntoSegment++
+
+    if (buildsIntoSegment >= segmentLength) {
+      const segmentEndTime = new Date(build.end)
+      const startMass = mass
+
+      // If this segment overshoots the threshold before its topup, add a
+      // breakpoint exactly where the decline crosses it, timed
+      // proportionally along the segment.
+      if (segmentEndTarget < POWDER_TOPUP_THRESHOLD_KG && startMass > POWDER_TOPUP_THRESHOLD_KG) {
+        const fraction =
+          (startMass - POWDER_TOPUP_THRESHOLD_KG) / (startMass - segmentEndTarget)
+        const crossingTime = new Date(
+          segmentStartTime.getTime() +
+            fraction * (segmentEndTime.getTime() - segmentStartTime.getTime())
+        )
+        points.push({
+          date: crossingTime.toISOString(),
+          massKg: POWDER_TOPUP_THRESHOLD_KG,
+          belowThreshold: true,
+        })
+      }
+
       points.push({
-        date: addDays(start, startDay + i).toISOString(),
-        topup: level,
-        totalBuilds,
+        date: segmentEndTime.toISOString(),
+        massKg: segmentEndTarget,
+        belowThreshold: segmentEndTarget < POWDER_TOPUP_THRESHOLD_KG,
       })
+
+      const isFullRefill = positionInCycle === SEGMENTS_PER_CYCLE - 1
+      mass = isFullRefill
+        ? POWDER_FULL_KG
+        : Math.min(POWDER_FULL_KG, segmentEndTarget + getTopupAmount(positionInCycle, cycleIndex))
+
+      const topupEndTime = addMinutes(segmentEndTime, TOPUP_DURATION_MINUTES)
+      points.push({
+        date: topupEndTime.toISOString(),
+        massKg: mass,
+        belowThreshold: mass < POWDER_TOPUP_THRESHOLD_KG,
+      })
+
+      positionInCycle++
+      if (positionInCycle >= SEGMENTS_PER_CYCLE) {
+        positionInCycle = 0
+        cycleIndex++
+      }
+
+      globalSegmentIndex++
+      segmentLength = SEGMENT_BUILD_COUNTS[globalSegmentIndex % SEGMENT_BUILD_COUNTS.length]
+      segmentEndTarget = isLateSegment(globalSegmentIndex)
+        ? LATE_SEGMENT_END_KG
+        : ON_TIME_SEGMENT_END_KG
+      segmentStartTime = topupEndTime
+      buildsIntoSegment = 0
     }
   })
 
@@ -171,71 +230,74 @@ export type RuntimePoint = { timestamp: string; run: number }
 
 export const PRINTER_IDS = ["1", "2", "3"]
 
+// Build (run=1) durations mostly match the 12h/15h/18h planning cycle —
+// production only meaningfully overruns on a couple of builds per printer,
+// rather than running way over on every build. Idle/changeover (run=0)
+// durations are unrelated to this and untouched.
 const RUNTIME_PROFILES: Record<string, Array<[number, number]>> = {
   "1": [
-    [20, 1],
+    [12, 1],
     [4, 0],
-    [24, 1],
+    [15, 1],
     [3, 0],
     [18, 1],
     [6, 0],
-    [22, 1],
+    [17, 1],
     [5, 0],
-    [26, 1],
+    [15, 1],
     [4, 0],
-    [16, 1],
+    [18, 1],
     [7, 0],
-    [28, 1],
+    [12, 1],
     [3, 0],
-    [19, 1],
+    [21, 1],
     [5, 0],
-    [30, 1],
+    [18, 1],
   ],
   "2": [
-    [24, 1],
+    [12, 1],
     [3, 0],
-    [27, 1],
-    [4, 0],
-    [15, 1],
-    [9, 0],
     [21, 1],
-    [6, 0],
-    [25, 1],
     [4, 0],
-    [17, 1],
-    [8, 0],
-    [23, 1],
-    [5, 0],
-    [20, 1],
+    [18, 1],
+    [9, 0],
+    [12, 1],
     [6, 0],
+    [15, 1],
+    [4, 0],
     [23, 1],
+    [8, 0],
+    [12, 1],
+    [5, 0],
+    [15, 1],
+    [6, 0],
+    [18, 1],
   ],
   "3": [
-    [27, 1],
+    [12, 1],
     [3, 0],
-    [30, 1],
+    [20, 1],
     [3, 0],
-    [30, 1],
+    [18, 1],
     [3, 0],
     [12, 1],
     [21, 0],
-    [12, 1],
+    [15, 1],
     [4, 0],
-    [20, 1],
+    [18, 1],
     [6, 0],
-    [24, 1],
+    [18, 1],
     [5, 0],
-    [40, 1],
+    [15, 1],
   ],
 }
 
-// Tiles each printer's hand-authored build/idle pattern back-to-back until it
-// covers the same window as the topup data (TOPUP_TOTAL_DAYS), so widening
-// the date filter reveals more real production history instead of running
-// dry after ~10 days while the topup chart keeps going for 61.
+// Tiles each printer's hand-authored build/idle pattern back-to-back until
+// it covers PRODUCTION_DATA_TOTAL_DAYS, so widening the date filter reveals
+// more real production history instead of running dry after ~10 days.
 function getRuntimeSegments(printerId: string): Array<[number, number]> {
   const pattern = RUNTIME_PROFILES[printerId] ?? RUNTIME_PROFILES["3"]
-  const targetHours = TOPUP_TOTAL_DAYS * 24
+  const targetHours = PRODUCTION_DATA_TOTAL_DAYS * 24
 
   const segments: Array<[number, number]> = []
   let totalHours = 0
@@ -265,27 +327,6 @@ export function generateRuntimeSeries(printerId: string = "3"): RuntimePoint[] {
   points.push({ timestamp: cursor.toISOString(), run: 1 })
 
   return points
-}
-
-// The midpoint of each idle gap between two builds, marking the boundary
-// between one production build and the next.
-export function generateRuntimeBuildBoundaries(
-  printerId: string = "3"
-): string[] {
-  const start = new Date(2025, 3, 1, 0, 0)
-  const segments = getRuntimeSegments(printerId)
-
-  const boundaries: string[] = []
-  let cursor = start
-
-  for (const [hours, run] of segments) {
-    if (run === 0) {
-      boundaries.push(addHours(cursor, hours / 2).toISOString())
-    }
-    cursor = addHours(cursor, hours)
-  }
-
-  return boundaries
 }
 
 export type TimeSpan = {
@@ -364,9 +405,13 @@ const SHARED_OPERATORS = [
   "Fiachra Brennan",
 ]
 
+// Each printer's actual build hours mostly match its planned build hours
+// (the same 12h/15h/18h cycle as getPlannedBuildHours) index-for-index —
+// production only meaningfully overruns on a couple of builds, not the
+// majority, so most lots show a clean matched bar rather than a large gap.
 const PRINTER_PROFILES: Record<string, PrinterProfile> = {
   "1": {
-    buildHours: [14, 18, 16, 20, 22, 16, 24, 18, 20, 26],
+    buildHours: [12, 15, 23, 12, 15, 18, 12, 20, 18, 12],
     changeOverHours: 6,
     lotIds: [
       "5501120",
@@ -392,7 +437,7 @@ const PRINTER_PROFILES: Record<string, PrinterProfile> = {
     operators: SHARED_OPERATORS,
   },
   "2": {
-    buildHours: [20, 24, 22, 26, 20, 28, 24, 22, 30, 26, 24],
+    buildHours: [12, 15, 18, 12, 19, 18, 12, 15, 18, 18, 15],
     changeOverHours: 7,
     lotIds: [
       "6602201",
@@ -419,7 +464,7 @@ const PRINTER_PROFILES: Record<string, PrinterProfile> = {
     operators: SHARED_OPERATORS,
   },
   "3": {
-    buildHours: [18, 22, 16, 20, 24, 18, 26, 20, 22, 30, 26, 40, 60],
+    buildHours: [12, 15, 18, 12, 15, 23, 12, 15, 18, 12, 19, 18, 12],
     changeOverHours: 8,
     lotIds: [
       "2246447",
