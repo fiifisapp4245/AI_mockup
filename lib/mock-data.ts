@@ -108,12 +108,12 @@ export type PowderMassPoint = {
 // mass) tile/derive from this same window.
 const PRODUCTION_DATA_TOTAL_DAYS = 91 // 4/1 - 6/30
 
-// A full hopper holds 70kg. One refill cycle is 4 segments, each running
-// 10-15 builds before its topup fires: two 30kg topups, one smaller
-// 15-20kg topup (varies slightly cycle to cycle), then a full refill back
-// to 70kg.
+// A full hopper holds 70kg. One refill cycle is 4 segments of 30 builds
+// each (120 builds total, ~60 days running 24/7): two 30kg topups, one
+// smaller 15-20kg topup (varies slightly cycle to cycle), then a full
+// refill back to 70kg.
 const POWDER_FULL_KG = 70
-const SEGMENT_BUILD_COUNTS = [10, 14, 12, 15, 11, 13]
+const SEGMENT_BUILD_COUNTS = [30]
 const SEGMENTS_PER_CYCLE = 4
 const TOPUP_DURATION_MINUTES = 720 // 12h — long enough to read as a visible slant
 
@@ -125,8 +125,11 @@ export const POWDER_TOPUP_THRESHOLD_KG = 20
 const ON_TIME_SEGMENT_END_KG = 24
 const LATE_SEGMENT_END_KG = 10
 
+// The first segment always fires its topup on time; most segments after
+// that run late instead, so a printer's chart shows a couple of clear
+// late-topup scenarios rather than being a rare one-off.
 function isLateSegment(globalSegmentIndex: number): boolean {
-  return globalSegmentIndex % 4 === 3
+  return globalSegmentIndex % 3 !== 0
 }
 
 // Segment position 0 and 1 are the two fixed 30kg topups; position 2 is
@@ -139,74 +142,80 @@ function getTopupAmount(positionInCycle: number, cycleIndex: number): number {
   return 30
 }
 
-// One point per segment boundary rather than one per build, connected with
-// straight ("linear") lines — a single clean diagonal decline per segment
-// instead of a per-build staircase. Each topup is its own short diagonal
-// ramp (TOPUP_DURATION_MINUTES) rather than an instant vertical jump. When
-// a segment runs late (mass would cross the threshold before its topup),
-// an extra point is inserted exactly at the threshold crossing so the
-// below-threshold portion can be drawn as its own segment.
-export function generatePowderMassSeries(printerId: string = "3"): PowderMassPoint[] {
-  const builds = generateRuntimeBuildSpans(printerId)
+// One point per build/changeover boundary, mirroring the real powder-weight
+// trend off the site's PI Vision "Popup Trend" chart: mass declines only
+// while a build is actually running (each build takes an even share of its
+// 30-build segment's total drop), holds perfectly flat across changeover/
+// idle gaps (no build = no powder consumed), then ramps sharply back up
+// over TOPUP_DURATION_MINUTES once a segment's build count is hit.
+export type PowderLateWindow = { start: string; end: string }
+
+export function generatePowderMassSeries(printerId: string = "3"): {
+  points: PowderMassPoint[]
+  lateWindows: PowderLateWindow[]
+} {
+  const segments = getRuntimeSegments(printerId)
   const points: PowderMassPoint[] = []
-  if (builds.length === 0) return points
+  const lateWindows: PowderLateWindow[] = []
+  if (segments.length === 0) return { points, lateWindows }
 
-  points.push({
-    date: builds[0].start,
-    massKg: POWDER_FULL_KG,
-    belowThreshold: false,
-  })
-
+  let cursor = new Date(2025, 3, 1, 0, 0)
   let mass = POWDER_FULL_KG
   let globalSegmentIndex = 0
   let cycleIndex = 0
   let positionInCycle = 0
   let segmentLength = SEGMENT_BUILD_COUNTS[0]
   let segmentEndTarget = isLateSegment(0) ? LATE_SEGMENT_END_KG : ON_TIME_SEGMENT_END_KG
+  let segmentStartMass = mass
   let buildsIntoSegment = 0
-  let segmentStartTime = new Date(builds[0].start)
+  // Marks the moment mass first crosses the topup threshold within a late
+  // segment — closed off into a lateWindows entry once that segment's
+  // topup finally fires, so the page can shade the whole overrun span.
+  let lateWindowStart: string | null = null
 
-  builds.forEach((build) => {
-    buildsIntoSegment++
+  points.push({ date: cursor.toISOString(), massKg: mass, belowThreshold: false })
 
-    if (buildsIntoSegment >= segmentLength) {
-      const segmentEndTime = new Date(build.end)
-      const startMass = mass
+  segments.forEach(([hours, run]) => {
+    cursor = addHours(cursor, hours)
 
-      // If this segment overshoots the threshold before its topup, add a
-      // breakpoint exactly where the decline crosses it, timed
-      // proportionally along the segment.
-      if (segmentEndTarget < POWDER_TOPUP_THRESHOLD_KG && startMass > POWDER_TOPUP_THRESHOLD_KG) {
-        const fraction =
-          (startMass - POWDER_TOPUP_THRESHOLD_KG) / (startMass - segmentEndTarget)
-        const crossingTime = new Date(
-          segmentStartTime.getTime() +
-            fraction * (segmentEndTime.getTime() - segmentStartTime.getTime())
-        )
-        points.push({
-          date: crossingTime.toISOString(),
-          massKg: POWDER_TOPUP_THRESHOLD_KG,
-          belowThreshold: true,
-        })
-      }
-
+    if (run === 0) {
+      // ChangeOver/idle time — flat line, no powder consumed.
       points.push({
-        date: segmentEndTime.toISOString(),
-        massKg: segmentEndTarget,
-        belowThreshold: segmentEndTarget < POWDER_TOPUP_THRESHOLD_KG,
-      })
-
-      const isFullRefill = positionInCycle === SEGMENTS_PER_CYCLE - 1
-      mass = isFullRefill
-        ? POWDER_FULL_KG
-        : Math.min(POWDER_FULL_KG, segmentEndTarget + getTopupAmount(positionInCycle, cycleIndex))
-
-      const topupEndTime = addMinutes(segmentEndTime, TOPUP_DURATION_MINUTES)
-      points.push({
-        date: topupEndTime.toISOString(),
+        date: cursor.toISOString(),
         massKg: mass,
         belowThreshold: mass < POWDER_TOPUP_THRESHOLD_KG,
       })
+      return
+    }
+
+    buildsIntoSegment++
+    const wasBelowThreshold = mass < POWDER_TOPUP_THRESHOLD_KG
+    const perBuildDrop = (segmentStartMass - segmentEndTarget) / segmentLength
+    mass = Math.max(mass - perBuildDrop, 0)
+    const isBelowThreshold = mass < POWDER_TOPUP_THRESHOLD_KG
+    points.push({ date: cursor.toISOString(), massKg: mass, belowThreshold: isBelowThreshold })
+
+    if (isBelowThreshold && !wasBelowThreshold) {
+      lateWindowStart = cursor.toISOString()
+    }
+
+    if (buildsIntoSegment >= segmentLength) {
+      const isFullRefill = positionInCycle === SEGMENTS_PER_CYCLE - 1
+      mass = isFullRefill
+        ? POWDER_FULL_KG
+        : Math.min(POWDER_FULL_KG, mass + getTopupAmount(positionInCycle, cycleIndex))
+
+      cursor = addMinutes(cursor, TOPUP_DURATION_MINUTES)
+      points.push({
+        date: cursor.toISOString(),
+        massKg: mass,
+        belowThreshold: mass < POWDER_TOPUP_THRESHOLD_KG,
+      })
+
+      if (lateWindowStart) {
+        lateWindows.push({ start: lateWindowStart, end: cursor.toISOString() })
+        lateWindowStart = null
+      }
 
       positionInCycle++
       if (positionInCycle >= SEGMENTS_PER_CYCLE) {
@@ -219,77 +228,662 @@ export function generatePowderMassSeries(printerId: string = "3"): PowderMassPoi
       segmentEndTarget = isLateSegment(globalSegmentIndex)
         ? LATE_SEGMENT_END_KG
         : ON_TIME_SEGMENT_END_KG
-      segmentStartTime = topupEndTime
+      segmentStartMass = mass
       buildsIntoSegment = 0
     }
   })
 
-  return points
+  return { points, lateWindows }
+}
+
+// ---------------------------------------------------------------------------
+// Powder Planner — a consolidated, all-printer view standing in for the
+// site's manually-maintained "Powder Tracker" spreadsheet: which lot each
+// printer is currently running, what's queued next (already IPM-qualified
+// elsewhere, or still needing an IPM first), and how many days remain
+// before that printer needs a full powder change.
+// ---------------------------------------------------------------------------
+
+export const POWDER_PLANNER_PRINTERS = [
+  "DE888",
+  "DE934",
+  "DE936",
+  "DE1349",
+  "DE1352",
+  "DE1355",
+  "DE1376",
+  "DE1378",
+  "DE1380",
+  "DE1382",
+  "DE1384",
+  "DE1386",
+  "DE1514",
+  "DE1515",
+  "DE1718",
+  "DE1719",
+  "DE1720",
+  "DE1721",
+  "DE1722",
+  "DE1723",
+]
+
+// These aren't currently running production (allocated to internal
+// projects instead), so the tracker has nothing to report for them.
+const POWDER_PLANNER_PROJECT_PRINTERS = new Set([
+  "DE888",
+  "DE1515",
+  "DE1718",
+  "DE1719",
+  "DE1720",
+])
+
+// Each 610kg powder delivery is split 4 ways across printers, so every lot
+// family shows up as up to 4 sibling lot numbers (-1 to -4).
+const POWDER_LOT_FAMILIES = ["7380734", "7386745", "7385755", "7383527", "7383506"]
+const POWDER_STORAGE_EXTRA_FAMILIES = ["7368236", "7361850", "7366359", "7367789"]
+const POWDER_STORAGE_NOTES = ["Powder on hold", "Still in Cones printers"]
+
+// "As of" date the tracker's days-remaining/approx-date columns are
+// counted from.
+const POWDER_PLANNER_REPORT_DATE = new Date(2026, 6, 29)
+
+function addFractionalDays(date: Date, days: number): Date {
+  return new Date(date.getTime() + days * 24 * 60 * 60 * 1000)
+}
+
+// Printer/bin identifiers often differ by only a digit or two between
+// neighbors (DE1376 vs DE1378, POW1 vs POW2), which barely shifts
+// seededFraction's simple additive-character hash. Multiplying the item's
+// position by a large prime first spreads neighboring entries across very
+// different seed strings so their generated values don't cluster together.
+function scatteredFraction(index: number, salt: string): number {
+  return seededFraction(`${index * 104729}-${salt}`)
+}
+
+const POWDER_PLANNER_COLOR_PALETTE = [
+  "border-orange-300 bg-orange-100 text-orange-900 dark:border-orange-800 dark:bg-orange-950 dark:text-orange-200",
+  "border-blue-300 bg-blue-100 text-blue-900 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200",
+  "border-purple-300 bg-purple-100 text-purple-900 dark:border-purple-800 dark:bg-purple-950 dark:text-purple-200",
+  "border-pink-300 bg-pink-100 text-pink-900 dark:border-pink-800 dark:bg-pink-950 dark:text-pink-200",
+  "border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
+  "border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200",
+  "border-cyan-300 bg-cyan-100 text-cyan-900 dark:border-cyan-800 dark:bg-cyan-950 dark:text-cyan-200",
+  "border-lime-300 bg-lime-100 text-lime-900 dark:border-lime-800 dark:bg-lime-950 dark:text-lime-200",
+  "border-indigo-300 bg-indigo-100 text-indigo-900 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-200",
+  "border-teal-300 bg-teal-100 text-teal-900 dark:border-teal-800 dark:bg-teal-950 dark:text-teal-200",
+  "border-fuchsia-300 bg-fuchsia-100 text-fuchsia-900 dark:border-fuchsia-800 dark:bg-fuchsia-950 dark:text-fuchsia-200",
+  "border-rose-300 bg-rose-100 text-rose-900 dark:border-rose-800 dark:bg-rose-950 dark:text-rose-200",
+]
+
+// Every lot family gets its own palette slot in first-seen order, rather
+// than a hash, so two unrelated deliveries can never land on the same
+// color — a hash-mod approach collided for a few of these once the
+// storage-plan-only families were added (more distinct families than
+// palette slots is fine as long as this list stays under 12; a hash would
+// silently keep colliding as more are added).
+const POWDER_LOT_FAMILY_COLOR_MAP: Record<string, string> = Object.fromEntries(
+  [...POWDER_LOT_FAMILIES, ...POWDER_STORAGE_EXTRA_FAMILIES].map((family, index) => [
+    family,
+    POWDER_PLANNER_COLOR_PALETTE[index % POWDER_PLANNER_COLOR_PALETTE.length],
+  ])
+)
+
+// So the same lot family always renders the same color, letting you
+// visually trace one delivery's 4-way split across printers.
+export function lotFamilyColorClass(lotFamily: string | null | undefined): string {
+  if (!lotFamily) return "border-border bg-muted/40 text-muted-foreground"
+  return (
+    POWDER_LOT_FAMILY_COLOR_MAP[lotFamily] ??
+    POWDER_PLANNER_COLOR_PALETTE[POWDER_PLANNER_COLOR_PALETTE.length - 1]
+  )
+}
+
+export type PowderPlannerRow = {
+  printerId: string
+  state: "Running" | "Projects"
+  topUpCount: number | null
+  cycleCount: number | null
+  currentLot: string | null
+  nextQualifiedLot: string | null
+  nextIpmLot: string | null
+  daysToNewPowder: number | null
+  approxDateNewPowder: string | null
+}
+
+// Every physical portion across the 5 main delivery families — 4 splits
+// each, one per printer, per the real 610kg/4-printer rule. Drawn from
+// without replacement below so no two printers can ever reference the
+// same physical portion as their current or next lot.
+const ALL_PRINTER_LOT_PORTIONS = POWDER_LOT_FAMILIES.flatMap((family) =>
+  [1, 2, 3, 4].map((suffix) => `${family}-${suffix}`)
+)
+
+// Deterministically reorders a fixed list by a per-position scattered
+// value — looks shuffled but is stable across re-renders.
+function deterministicShuffle<T>(items: T[], salt: string): T[] {
+  return items
+    .map((item, index) => ({ item, sortKey: scatteredFraction(index, salt) }))
+    .sort((a, b) => a.sortKey - b.sortKey)
+    .map(({ item }) => item)
+}
+
+// Mirrors the real tracker's math one-for-one: with 30 builds per topup
+// segment and 4 segments per full cycle, a printer at topup N / cycle
+// count C has (3 - N) full 30-build segments left plus (30 - C) builds
+// left in its current one — at ~12h/build (9h build + 3h changeover),
+// that's ((3-N)*30 + (30-C)) * 0.5 days until the next full powder change.
+export function generatePowderPlannerRows(): PowderPlannerRow[] {
+  const runningPrinters = POWDER_PLANNER_PRINTERS.filter(
+    (printerId) => !POWDER_PLANNER_PROJECT_PRINTERS.has(printerId)
+  )
+
+  // One unique portion per running printer for "current," leaving
+  // whatever's left over as the pool "next" lots can draw from — so a
+  // portion already loaded somewhere can never also show up as another
+  // printer's queued next lot.
+  const shuffledPortions = deterministicShuffle(ALL_PRINTER_LOT_PORTIONS, "portion-order")
+  const currentPortions = shuffledPortions.slice(0, runningPrinters.length)
+  const nextPortions = shuffledPortions.slice(runningPrinters.length)
+
+  const rows = new Map<string, PowderPlannerRow>()
+
+  POWDER_PLANNER_PRINTERS.forEach((printerId) => {
+    if (POWDER_PLANNER_PROJECT_PRINTERS.has(printerId)) {
+      rows.set(printerId, {
+        printerId,
+        state: "Projects",
+        topUpCount: null,
+        cycleCount: null,
+        currentLot: null,
+        nextQualifiedLot: null,
+        nextIpmLot: null,
+        daysToNewPowder: null,
+        approxDateNewPowder: null,
+      })
+    }
+  })
+
+  runningPrinters.forEach((printerId, runningIndex) => {
+    const topUpCount = Math.floor(scatteredFraction(runningIndex, "topup") * 4)
+    const cycleCount = Math.floor(scatteredFraction(runningIndex, "cycle") * 30)
+    const daysToNewPowder =
+      Math.round(((3 - topUpCount) * 30 + (30 - cycleCount)) * 0.5 * 10) / 10
+    const approxDateNewPowder = addFractionalDays(
+      POWDER_PLANNER_REPORT_DATE,
+      daysToNewPowder
+    ).toISOString()
+
+    rows.set(printerId, {
+      printerId,
+      state: "Running",
+      topUpCount,
+      cycleCount,
+      currentLot: currentPortions[runningIndex],
+      nextQualifiedLot: null,
+      nextIpmLot: null,
+      daysToNewPowder,
+      approxDateNewPowder,
+    })
+  })
+
+  // Only as many printers as there are leftover portions get a queued
+  // "next" lot lined up — matching the real tracker, where most rows
+  // leave both Next columns blank until a swap is actually imminent.
+  const printersWithNext = deterministicShuffle(runningPrinters, "next-eligible").slice(
+    0,
+    nextPortions.length
+  )
+  printersWithNext.forEach((printerId, i) => {
+    const row = rows.get(printerId)!
+    const nextLot = nextPortions[i]
+    if (scatteredFraction(i, "needs-ipm") > 0.3) {
+      row.nextIpmLot = nextLot
+    } else {
+      row.nextQualifiedLot = nextLot
+    }
+  })
+
+  return POWDER_PLANNER_PRINTERS.map((printerId) => rows.get(printerId)!)
+}
+
+export type PowderStorageBin = {
+  bin: string
+  kg: number
+  lot: string | null
+  note: string | null
+}
+
+// The 4-printer delivery split leaves 2.5kg behind to flush the sieve, so a
+// bin's contents run a little under the round 152.5kg-per-printer share.
+// Only draws from the storage-only families — the 5 main delivery
+// families are fully accounted for as printer current/next lots above, so
+// none of their portions should also show up sitting in a cabinet.
+export function generatePowderStorageBins(count: number = 25): PowderStorageBin[] {
+  return Array.from({ length: count }, (_, i): PowderStorageBin => {
+    const bin = `POW${i + 1}`
+    if (scatteredFraction(i, "bin-empty") < 0.15) {
+      return { bin, kg: 0, lot: null, note: null }
+    }
+
+    const family =
+      POWDER_STORAGE_EXTRA_FAMILIES[
+        Math.floor(scatteredFraction(i, "bin-family") * POWDER_STORAGE_EXTRA_FAMILIES.length)
+      ]
+    const suffix = 1 + Math.floor(scatteredFraction(i, "bin-suffix") * 4)
+    const kg = Math.round((150 + scatteredFraction(i, "bin-kg") * 180) * 2) / 2
+    const hasNote = scatteredFraction(i, "bin-note") < 0.12
+    const note = hasNote
+      ? POWDER_STORAGE_NOTES[
+          Math.floor(scatteredFraction(i, "bin-note-index") * POWDER_STORAGE_NOTES.length)
+        ]
+      : null
+
+    return { bin, kg, lot: `${family}-${suffix}`, note }
+  })
 }
 
 export type RuntimePoint = { timestamp: string; run: number }
 
 export const PRINTER_IDS = ["1", "2", "3"]
 
-// Build (run=1) durations mostly match the 12h/15h/18h planning cycle —
-// production only meaningfully overruns on a couple of builds per printer,
-// rather than running way over on every build. Idle/changeover (run=0)
-// durations are unrelated to this and untouched.
+// Derived from a real BuildSummary export for printer 3 (build/changeover
+// durations in whole hours, run=1 for a build, run=0 for the changeover
+// after it) — mostly short changeovers punctuated by occasional multi-day
+// gaps. Printers 1 and 2 apply a small per-printer scale + jitter to the
+// same sequence so all three look related but not identical.
 const RUNTIME_PROFILES: Record<string, Array<[number, number]>> = {
   "1": [
-    [12, 1],
+    [5, 1],
+    [2, 0],
+    [7, 1],
+    [2, 0],
+    [7, 1],
+    [2, 0],
+    [7, 1],
+    [2, 0],
+    [7, 1],
+    [19, 0],
+    [8, 1],
+    [49, 0],
+    [8, 1],
+    [2, 0],
+    [8, 1],
     [4, 0],
-    [15, 1],
+    [8, 1],
     [3, 0],
-    [18, 1],
+    [9, 1],
+    [3, 0],
+    [9, 1],
+    [1, 0],
+    [9, 1],
+    [4, 0],
+    [9, 1],
+    [3, 0],
+    [9, 1],
+    [61, 0],
+    [9, 1],
+    [3, 0],
+    [9, 1],
+    [5, 0],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [4, 0],
+    [9, 1],
+    [4, 0],
+    [9, 1],
+    [2, 0],
+    [10, 1],
+    [3, 0],
+    [10, 1],
+    [74, 0],
+    [10, 1],
+    [3, 0],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [2, 0],
+    [8, 1],
     [6, 0],
-    [17, 1],
+    [8, 1],
+    [2, 0],
+    [8, 1],
+    [2, 0],
+    [8, 1],
+    [54, 0],
+    [8, 1],
+    [2, 0],
+    [8, 1],
     [5, 0],
-    [15, 1],
-    [4, 0],
-    [18, 1],
-    [7, 0],
-    [12, 1],
+    [8, 1],
+    [2, 0],
+    [8, 1],
     [3, 0],
-    [21, 1],
+    [8, 1],
+    [2, 0],
+    [8, 1],
+    [6, 0],
+    [8, 1],
+    [3, 0],
+    [8, 1],
+    [8, 0],
+    [10, 1],
+    [75, 0],
+    [9, 1],
+    [2, 0],
+    [8, 1],
+    [3, 0],
+    [5, 1],
+    [3, 0],
+    [8, 1],
+    [2, 0],
+    [8, 1],
+    [2, 0],
+    [8, 1],
+    [3, 0],
+    [8, 1],
+    [55, 0],
+    [8, 1],
     [5, 0],
-    [18, 1],
+    [8, 1],
+    [2, 0],
+    [8, 1],
+    [3, 0],
+    [8, 1],
+    [56, 0],
+    [8, 1],
+    [49, 0],
+    [8, 1],
+    [2, 0],
+    [8, 1],
+    [5, 0],
+    [8, 1],
+    [2, 0],
+    [8, 1],
+    [2, 0],
+    [8, 1],
+    [2, 0],
+    [9, 1],
+    [3, 0],
+    [9, 1],
+    [3, 0],
+    [8, 1],
+    [2, 0],
+    [8, 1],
+    [50, 0],
+    [8, 1],
+    [3, 0],
+    [7, 1],
+    [2, 0],
+    [7, 1],
+    [3, 0],
+    [7, 1],
+    [12, 0],
+    [7, 1],
+    [34, 0],
+    [7, 1],
   ],
   "2": [
+    [6, 1],
+    [2, 0],
+    [9, 1],
+    [3, 0],
+    [9, 1],
+    [3, 0],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [21, 0],
+    [10, 1],
+    [54, 0],
+    [10, 1],
+    [2, 0],
+    [10, 1],
+    [4, 0],
+    [10, 1],
+    [3, 0],
+    [11, 1],
+    [3, 0],
+    [11, 1],
+    [1, 0],
+    [11, 1],
+    [4, 0],
+    [11, 1],
+    [3, 0],
+    [11, 1],
+    [67, 0],
+    [11, 1],
+    [3, 0],
+    [11, 1],
+    [6, 0],
+    [11, 1],
+    [2, 0],
+    [11, 1],
+    [4, 0],
+    [12, 1],
+    [4, 0],
+    [11, 1],
+    [2, 0],
     [12, 1],
     [3, 0],
-    [21, 1],
-    [4, 0],
-    [18, 1],
+    [12, 1],
+    [80, 0],
+    [12, 1],
+    [3, 0],
+    [11, 1],
+    [2, 0],
+    [11, 1],
+    [2, 0],
+    [10, 1],
+    [7, 0],
+    [10, 1],
+    [2, 0],
+    [10, 1],
+    [2, 0],
+    [10, 1],
+    [59, 0],
+    [10, 1],
+    [2, 0],
+    [10, 1],
+    [6, 0],
+    [10, 1],
+    [2, 0],
+    [10, 1],
+    [3, 0],
+    [10, 1],
+    [2, 0],
+    [10, 1],
+    [7, 0],
+    [10, 1],
+    [3, 0],
+    [10, 1],
     [9, 0],
     [12, 1],
-    [6, 0],
-    [15, 1],
-    [4, 0],
-    [23, 1],
-    [8, 0],
-    [12, 1],
+    [82, 0],
+    [11, 1],
+    [2, 0],
+    [10, 1],
+    [3, 0],
+    [7, 1],
+    [3, 0],
+    [10, 1],
+    [2, 0],
+    [10, 1],
+    [2, 0],
+    [10, 1],
+    [3, 0],
+    [10, 1],
+    [60, 0],
+    [10, 1],
     [5, 0],
-    [15, 1],
-    [6, 0],
-    [18, 1],
+    [10, 1],
+    [2, 0],
+    [10, 1],
+    [3, 0],
+    [10, 1],
+    [62, 0],
+    [10, 1],
+    [54, 0],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [5, 0],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [2, 0],
+    [11, 1],
+    [3, 0],
+    [11, 1],
+    [3, 0],
+    [10, 1],
+    [2, 0],
+    [9, 1],
+    [53, 0],
+    [9, 1],
+    [3, 0],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [3, 0],
+    [9, 1],
+    [13, 0],
+    [9, 1],
+    [36, 0],
+    [9, 1],
   ],
   "3": [
-    [12, 1],
+    [6, 1],
+    [2, 0],
+    [9, 1],
     [3, 0],
-    [20, 1],
+    [9, 1],
     [3, 0],
-    [18, 1],
-    [3, 0],
-    [12, 1],
-    [21, 0],
-    [15, 1],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [23, 0],
+    [9, 1],
+    [56, 0],
+    [9, 1],
+    [2, 0],
+    [9, 1],
     [4, 0],
-    [18, 1],
+    [9, 1],
+    [3, 0],
+    [10, 1],
+    [3, 0],
+    [10, 1],
+    [1, 0],
+    [10, 1],
+    [4, 0],
+    [10, 1],
+    [3, 0],
+    [10, 1],
+    [69, 0],
+    [10, 1],
+    [3, 0],
+    [10, 1],
     [6, 0],
-    [18, 1],
+    [10, 1],
+    [2, 0],
+    [10, 1],
+    [4, 0],
+    [11, 1],
+    [4, 0],
+    [10, 1],
+    [2, 0],
+    [11, 1],
+    [3, 0],
+    [11, 1],
+    [82, 0],
+    [11, 1],
+    [3, 0],
+    [10, 1],
+    [2, 0],
+    [10, 1],
+    [2, 0],
+    [9, 1],
+    [7, 0],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [60, 0],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [6, 0],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [3, 0],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [7, 0],
+    [9, 1],
+    [3, 0],
+    [9, 1],
+    [9, 0],
+    [11, 1],
+    [82, 0],
+    [10, 1],
+    [2, 0],
+    [9, 1],
+    [3, 0],
+    [6, 1],
+    [3, 0],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [3, 0],
+    [9, 1],
+    [60, 0],
+    [9, 1],
     [5, 0],
-    [15, 1],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [3, 0],
+    [9, 1],
+    [61, 0],
+    [9, 1],
+    [53, 0],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [6, 0],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [2, 0],
+    [11, 1],
+    [3, 0],
+    [11, 1],
+    [3, 0],
+    [10, 1],
+    [2, 0],
+    [9, 1],
+    [58, 0],
+    [9, 1],
+    [3, 0],
+    [9, 1],
+    [2, 0],
+    [9, 1],
+    [3, 0],
+    [9, 1],
+    [14, 0],
+    [9, 1],
+    [40, 0],
+    [9, 1],
   ],
 }
 
@@ -568,10 +1162,14 @@ export function getPrinterOperators(printerId: string = "3"): string[] {
   return getPrinterProfile(printerId).operators
 }
 
-// Planned build duration isn't one fixed number — it varies by lot, since
-// actual production also ranges widely. Cycles through 12h/15h/18h plans.
-const PLANNING_BUILD_HOURS_OPTIONS = [12, 15, 18]
-const PLANNING_CHANGEOVER_HOURS = 2
+// Standard planning reference per the real process: a plain build is
+// planned at 9h + 3h changeover. An IPM (qualification/coupon) build is
+// shorter — 6h + 1h changeover — since it's a smaller test build rather
+// than a full production run.
+const PLANNING_BUILD_HOURS_OPTIONS = [9]
+const PLANNING_CHANGEOVER_HOURS = 3
+export const IPM_BUILD_HOURS = 6
+export const IPM_CHANGEOVER_HOURS = 1
 
 function getPlannedBuildHours(index: number): number {
   return PLANNING_BUILD_HOURS_OPTIONS[index % PLANNING_BUILD_HOURS_OPTIONS.length]

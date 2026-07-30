@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { href: "/runtime", label: "Printer Runtime and Topup" },
   { href: "/timeline", label: "Batch/Lot Timeline" },
   { href: "/asset-utilization", label: "Asset Utilization" },
+  { href: "/powder-planner", label: "Powder Planner" },
 ]
 
 export function MainNav() {
