@@ -11,6 +11,7 @@ const NAV_ITEMS = [
   { href: "/timeline", label: "Batch/Lot Timeline" },
   { href: "/asset-utilization", label: "Asset Utilization" },
   { href: "/powder-planner", label: "Powder Planner" },
+  { href: "/live-schedule", label: "Live Schedule" },
 ]
 
 export function MainNav() {
