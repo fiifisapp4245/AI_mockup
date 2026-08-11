@@ -182,6 +182,21 @@ export default function LiveSchedulePage() {
     [anchorMs]
   )
 
+  // Two scrollbars, kept in sync — the main one sits below every printer
+  // row, which is out of view whenever you've scrolled up to look at the
+  // top of a tall list. This top strip mirrors it so there's always a
+  // scrollbar on screen no matter where you're looking.
+  const topScrollRef = React.useRef<HTMLDivElement>(null)
+  const bottomScrollRef = React.useRef<HTMLDivElement>(null)
+  const isSyncingScroll = React.useRef(false)
+
+  const syncScroll = (source: HTMLDivElement, target: HTMLDivElement | null) => {
+    if (isSyncingScroll.current || !target) return
+    isSyncingScroll.current = true
+    target.scrollLeft = source.scrollLeft
+    isSyncingScroll.current = false
+  }
+
   return (
     <div className="flex gap-6">
       <div className="flex min-w-0 flex-1 flex-col gap-3">
@@ -216,6 +231,20 @@ export default function LiveSchedulePage() {
           full generated window. Hover any block for its build number, cycle
           top-up count, powder lot, and product ID.
         </p>
+
+        {/* Top scrollbar, synced with the one below — offset by the label
+            column width so it lines up with the timeline, not the printer list. */}
+        <div className="flex">
+          <div className="shrink-0" style={{ width: LABEL_COLUMN_WIDTH }} />
+          <div
+            ref={topScrollRef}
+            onScroll={() => syncScroll(topScrollRef.current!, bottomScrollRef.current)}
+            className="overflow-x-auto overflow-y-hidden"
+            style={{ height: 16 }}
+          >
+            <div style={{ width: totalWidth, height: 1 }} />
+          </div>
+        </div>
 
         <div className="flex rounded-lg border">
           {/* Fixed left column — never scrolls horizontally. */}
@@ -261,7 +290,11 @@ export default function LiveSchedulePage() {
           </div>
 
           {/* Only this side scrolls horizontally. */}
-          <div className="overflow-x-auto">
+          <div
+            ref={bottomScrollRef}
+            onScroll={() => syncScroll(bottomScrollRef.current!, topScrollRef.current)}
+            className="overflow-x-auto"
+          >
             <div style={{ width: totalWidth }}>
               <div
                 className="relative border-b bg-muted/40"

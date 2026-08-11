@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "Bash(awk -F: '$1>750 && $1<1160')",
+      "Bash(npx prisma *)",
+      "Bash(curl -s http://localhost:4000/api/printers)",
+      "Bash(curl -s http://localhost:4000/api/kpi/3)",
+      "Bash(curl -s http://localhost:4000/api/runtime/3)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('productionSeries len', len\\(d['productionSeries']\\)\\); print\\('planningSeries len', len\\(d['planningSeries']\\)\\); print\\('productionBuildSpans len', len\\(d['productionBuildSpans']\\)\\); print\\(d['productionBuildSpans'][:2]\\)\")",
+      "Bash(curl -s http://localhost:4000/api/runtime/3/powder-mass)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('points', len\\(d['points']\\)\\); print\\('lateWindows', d['lateWindows']\\)\")",
+      "Bash(curl -s http://localhost:4000/api/timeline/3/lot-chain)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('production segs', len\\(d['productionSegments']\\)\\); print\\('planning segs', len\\(d['planningSegments']\\)\\); print\\(d['productionSegments'][:6]\\)\")",
+      "Bash(curl -s http://localhost:4000/api/timeline/3/batch-lots)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('lots', len\\(d['lots']\\)\\); print\\(d['lots'][0]['lotId'], len\\(d['lots'][0]['productionSegments']\\), len\\(d['lots'][0]['planningSegments']\\)\\)\")",
+      "Bash(curl -s http://localhost:4000/api/asset-utilization/3)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('operators', d['operators']\\); print\\('forecastByOperator rows', len\\(d['forecastByOperator']\\)\\); print\\('maintenance', len\\(d['maintenanceSegments']\\)\\)\")",
+      "Bash(curl -s http://localhost:4000/api/powder-planner/rows)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('rows', len\\(d\\)\\); print\\(d[1]\\)\")",
+      "Bash(curl -s http://localhost:4000/api/powder-planner/storage-bins)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('bins', len\\(d\\)\\); print\\(d[:3]\\)\")",
+      "Bash(curl -s http://localhost:4000/api/live-schedule)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('schedules', len\\(d['schedules']\\)\\); r=[s for s in d['schedules'] if s['state']=='RUNNING'][0]; print\\(r['printerId'], r['topUpCount'], r['cycleCount'], len\\(r['events']\\)\\); print\\(r['events'][:3]\\)\")",
+      "Bash(pkill -f \"tsx watch src/index.ts\")",
+      "Bash(SCRATCH=\"/private/tmp/claude-501/-Users-fiifiappiah-Desktop-Claude-Code-prototyping-AI-Dashboard-Realta-ai-dashboard-realta/d49e2096-782c-4c46-be84-8d2b646246b5/scratchpad\" *)",
+      "Bash(git checkout *)",
+      "Bash(rm -rf server lib/api-client.ts lib/use-api-data.tsx .env.local)",
+      "Bash(NODE_PATH=/Users/fiifiappiah/.npm/_npx/e41f203b7505f1fb/node_modules SCRATCH=/private/tmp/claude-501/-Users-fiifiappiah-Desktop-Claude-Code-prototyping-AI-Dashboard-Realta-ai-dashboard-realta/d49e2096-782c-4c46-be84-8d2b646246b5/scratchpad node /private/tmp/claude-501/-Users-fiifiappiah-Desktop-Claude-Code-prototyping-AI-Dashboard-Realta-ai-dashboard-realta/d49e2096-782c-4c46-be84-8d2b646246b5/scratchpad/scrollbar-check.cjs)"
+    ],
+    "additionalDirectories": [
+      "/private/tmp/claude-501/-Users-fiifiappiah-Desktop-Claude-Code-prototyping-AI-Dashboard-Realta-ai-dashboard-realta/d49e2096-782c-4c46-be84-8d2b646246b5/scratchpad"
+    ]
+  }
+}
