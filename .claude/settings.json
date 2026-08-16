@@ -26,7 +26,18 @@
       "Bash(SCRATCH=\"/private/tmp/claude-501/-Users-fiifiappiah-Desktop-Claude-Code-prototyping-AI-Dashboard-Realta-ai-dashboard-realta/d49e2096-782c-4c46-be84-8d2b646246b5/scratchpad\" *)",
       "Bash(git checkout *)",
       "Bash(rm -rf server lib/api-client.ts lib/use-api-data.tsx .env.local)",
-      "Bash(NODE_PATH=/Users/fiifiappiah/.npm/_npx/e41f203b7505f1fb/node_modules SCRATCH=/private/tmp/claude-501/-Users-fiifiappiah-Desktop-Claude-Code-prototyping-AI-Dashboard-Realta-ai-dashboard-realta/d49e2096-782c-4c46-be84-8d2b646246b5/scratchpad node /private/tmp/claude-501/-Users-fiifiappiah-Desktop-Claude-Code-prototyping-AI-Dashboard-Realta-ai-dashboard-realta/d49e2096-782c-4c46-be84-8d2b646246b5/scratchpad/scrollbar-check.cjs)"
+      "Bash(NODE_PATH=/Users/fiifiappiah/.npm/_npx/e41f203b7505f1fb/node_modules SCRATCH=/private/tmp/claude-501/-Users-fiifiappiah-Desktop-Claude-Code-prototyping-AI-Dashboard-Realta-ai-dashboard-realta/d49e2096-782c-4c46-be84-8d2b646246b5/scratchpad node /private/tmp/claude-501/-Users-fiifiappiah-Desktop-Claude-Code-prototyping-AI-Dashboard-Realta-ai-dashboard-realta/d49e2096-782c-4c46-be84-8d2b646246b5/scratchpad/scrollbar-check.cjs)",
+      "Bash(grep -n \"LiveScheduleBlockType\\\\|LiveScheduleBlock =\\\\|generateSinglePrinterLiveSchedule\\\\|label: \\\\`Build\" lib/mock-data.ts)",
+      "Bash(grep -n \"Printer unload\\\\|label: \\\\`Build \\\\${buildNumber}\\\\`\" lib/mock-data.ts)",
+      "Bash(cat)",
+      "Bash(rm -f ./_check_final.ts)",
+      "Bash(rm -f \"/private/tmp/claude-501/-Users-fiifiappiah-Desktop-Claude-Code-prototyping-AI-Dashboard-Realta-ai-dashboard-realta/d49e2096-782c-4c46-be84-8d2b646246b5/scratchpad/verify-maintenance.ts\")",
+      "Bash(NODE_PATH=/Users/fiifiappiah/.npm/_npx/e41f203b7505f1fb/node_modules npx tsx verify-maintenance.ts)",
+      "Bash(NODE_PATH=/Users/fiifiappiah/.npm/_npx/e41f203b7505f1fb/node_modules npx playwright screenshot --browser=chromium --executable-path=\"/Users/fiifiappiah/Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing\" --viewport-size=1600,900 \"http://localhost:3000/live-schedule\" \"/private/tmp/claude-501/-Users-fiifiappiah-Desktop-Claude-Code-prototyping-AI-Dashboard-Realta-ai-dashboard-realta/d49e2096-782c-4c46-be84-8d2b646246b5/scratchpad/live-schedule.png\")",
+      "Bash(NODE_PATH=/Users/fiifiappiah/.npm/_npx/e41f203b7505f1fb/node_modules npx playwright screenshot --help)",
+      "Bash(NODE_PATH=/Users/fiifiappiah/.npm/_npx/e41f203b7505f1fb/node_modules npx playwright screenshot --browser=chromium --viewport-size=1600,900 \"http://localhost:3000/live-schedule\" \"/private/tmp/claude-501/-Users-fiifiappiah-Desktop-Claude-Code-prototyping-AI-Dashboard-Realta-ai-dashboard-realta/d49e2096-782c-4c46-be84-8d2b646246b5/scratchpad/live-schedule.png\")",
+      "Bash(lsof -ti:3000)",
+      "Bash(grep -n \"DE[0-9]\\\\{3,4\\\\}\" lib/mock-data.ts)"
     ],
     "additionalDirectories": [
       "/private/tmp/claude-501/-Users-fiifiappiah-Desktop-Claude-Code-prototyping-AI-Dashboard-Realta-ai-dashboard-realta/d49e2096-782c-4c46-be84-8d2b646246b5/scratchpad"

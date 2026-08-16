@@ -4,10 +4,18 @@ import * as React from "react"
 
 import { ChatSidebar, type ChatPrompt } from "@/components/dashboard/chat-sidebar"
 import {
+  computeApproxDateNewPowder,
+  computeDaysToNewPowder,
   generatePowderPlannerRows,
   generatePowderStorageBins,
   lotFamilyColorClass,
+  NOT_RUNNING_PRINTER_IDS,
+  SHIFT_MODE_RUN_DAYS,
+  type ShiftMode,
 } from "@/lib/mock-data"
+import { usePrinterVisibility } from "@/lib/printer-visibility"
+
+const SHIFT_MODES: ShiftMode[] = ["24/7", "24/6", "24/5"]
 
 const CHAT_SUGGESTIONS = [
   "Which printers need a powder change soonest?",
@@ -16,6 +24,16 @@ const CHAT_SUGGESTIONS = [
 ]
 
 const CHAT_PROMPTS: ChatPrompt[] = [
+  {
+    keywords: ["24/7", "24/6", "24/5", "shift mode", "schedule", "week"],
+    answer:
+      "The 24/7 · 24/6 · 24/5 toggle above the tracker sets how many days a week each printer is assumed to run — fewer running days a week stretches out the Days to New Powder and Approx Date Required columns, since the same remaining builds now take more calendar days.",
+  },
+  {
+    keywords: ["visibility", "toggle", "hide", "show"],
+    answer:
+      "The Printer Visibility toggles at the top control the Live Schedule page only — switch a printer off here and it drops out of Live Schedule's list, without affecting anything in the tracker table below.",
+  },
   {
     keywords: ["soon", "next", "urgent", "days", "change"],
     answer:
@@ -29,7 +47,7 @@ const CHAT_PROMPTS: ChatPrompt[] = [
   {
     keywords: ["project", "offline", "not running", "idle"],
     answer:
-      "Rows marked \"Projects\" aren't currently in the production rotation, so there's nothing to track for them — they're excluded from the days/date columns.",
+      "Rows marked \"Not Running\" aren't currently in the production rotation, so there's nothing to track for them — they're excluded from the days/date columns.",
   },
   {
     keywords: ["storage", "bin", "cabinet", "pow"],
@@ -72,15 +90,100 @@ function LotBadge({ lot }: { lot: string | null }) {
   )
 }
 
+function PrinterToggle({
+  printerId,
+  on,
+  onToggle,
+}: {
+  printerId: string
+  on: boolean
+  onToggle: () => void
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-sm">
+      <span className="font-medium">{printerId}</span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label={`${printerId} visible on Live Schedule`}
+        onClick={onToggle}
+        className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
+          on ? "bg-emerald-500" : "bg-muted-foreground/30"
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 size-4 rounded-full bg-white shadow transition-transform ${
+            on ? "translate-x-[18px]" : "translate-x-0.5"
+          }`}
+        />
+      </button>
+    </div>
+  )
+}
+
+function ShiftModeToggle({
+  value,
+  onChange,
+}: {
+  value: ShiftMode
+  onChange: (mode: ShiftMode) => void
+}) {
+  return (
+    <div className="inline-flex items-center rounded-md border p-0.5 text-xs">
+      {SHIFT_MODES.map((mode) => (
+        <button
+          key={mode}
+          type="button"
+          onClick={() => onChange(mode)}
+          className={`rounded px-2.5 py-1 font-medium transition-colors ${
+            value === mode
+              ? "bg-foreground text-background"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          {mode}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export default function PowderPlannerPage() {
   const rows = React.useMemo(() => generatePowderPlannerRows(), [])
   const bins = React.useMemo(() => generatePowderStorageBins(), [])
+  const { isVisible, toggle } = usePrinterVisibility(NOT_RUNNING_PRINTER_IDS)
+  const [shiftMode, setShiftMode] = React.useState<ShiftMode>("24/7")
+  const runDaysPerWeek = SHIFT_MODE_RUN_DAYS[shiftMode]
 
   return (
     <div className="flex gap-6">
       <div className="flex min-w-0 flex-1 flex-col gap-8">
         <div className="flex flex-col gap-3">
-          <h2 className="text-sm font-medium">Powder Planner</h2>
+          <h2 className="text-sm font-medium">Printer Visibility</h2>
+          <p className="text-xs text-muted-foreground">
+            Turn a printer off here to hide it from the Live Schedule page —
+            useful for printers you don&apos;t need to watch right now. This
+            only controls Live Schedule; the tracker below still shows every
+            printer.
+          </p>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-5">
+            {rows.map((row) => (
+              <PrinterToggle
+                key={row.printerId}
+                printerId={row.printerId}
+                on={isVisible(row.printerId)}
+                onToggle={() => toggle(row.printerId)}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-medium">Powder Planner</h2>
+            <ShiftModeToggle value={shiftMode} onChange={setShiftMode} />
+          </div>
           <p className="text-xs text-muted-foreground">
             All-printer view of the powder tracker: current lot, what&apos;s
             queued next, and how many days remain before each printer needs
@@ -90,7 +193,9 @@ export default function PowderPlannerPage() {
             4-way split across printers. Whether a printer&apos;s next lot
             is already qualified or still needs an IPM build is shown by
             which of the two &quot;Next&quot; columns it appears in, not by
-            color.
+            color. The {shiftMode} toggle above controls how many days a
+            week each printer is assumed to run, which is what the Days to
+            New Powder and Approx Date Required columns are based on.
           </p>
 
           <div className="overflow-x-auto rounded-lg border">
@@ -103,21 +208,26 @@ export default function PowderPlannerPage() {
                   <th className="px-3 py-2 font-medium">Current Powder</th>
                   <th className="px-3 py-2 font-medium">Next – Qualified Powder</th>
                   <th className="px-3 py-2 font-medium">Next – Need IPM First</th>
-                  <th className="px-3 py-2 font-medium">Days to New Powder</th>
-                  <th className="px-3 py-2 font-medium">Approx Date Required</th>
+                  <th className="px-3 py-2 font-medium">Days to New Powder ({shiftMode})</th>
+                  <th className="px-3 py-2 font-medium">Approx Date Required ({shiftMode})</th>
                   <th className="px-3 py-2 font-medium">Printer State</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row) => {
-                  const isProjects = row.state === "Projects"
-                  const isUrgent =
-                    row.daysToNewPowder !== null && row.daysToNewPowder <= 10
+                  const isNotRunning = row.state === "Not Running"
+                  const daysToNewPowder =
+                    row.topUpCount !== null && row.cycleCount !== null
+                      ? computeDaysToNewPowder(row.topUpCount, row.cycleCount, runDaysPerWeek)
+                      : null
+                  const approxDateNewPowder =
+                    daysToNewPowder !== null ? computeApproxDateNewPowder(daysToNewPowder) : null
+                  const isUrgent = daysToNewPowder !== null && daysToNewPowder <= 10
 
                   return (
                     <tr
                       key={row.printerId}
-                      className={`border-b last:border-0 ${isProjects ? "bg-rose-50 dark:bg-rose-950/30" : ""}`}
+                      className={`border-b last:border-0 ${isNotRunning ? "bg-rose-50 dark:bg-rose-950/30" : ""}`}
                     >
                       <td className="px-3 py-2 font-medium">{row.printerId}</td>
                       <td className="px-3 py-2 tabular-nums">
@@ -138,15 +248,15 @@ export default function PowderPlannerPage() {
                       <td
                         className={`px-3 py-2 tabular-nums ${isUrgent ? "font-semibold text-rose-600 dark:text-rose-400" : ""}`}
                       >
-                        {row.daysToNewPowder ?? "—"}
+                        {daysToNewPowder ?? "—"}
                       </td>
                       <td className="px-3 py-2 tabular-nums">
-                        {formatDate(row.approxDateNewPowder)}
+                        {formatDate(approxDateNewPowder)}
                       </td>
                       <td className="px-3 py-2">
                         <span
                           className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                            isProjects
+                            isNotRunning
                               ? "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
                               : "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
                           }`}

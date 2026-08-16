@@ -269,13 +269,14 @@ export const POWDER_PLANNER_PRINTERS = [
 
 // These aren't currently running production (allocated to internal
 // projects instead), so the tracker has nothing to report for them.
-const POWDER_PLANNER_PROJECT_PRINTERS = new Set([
+export const NOT_RUNNING_PRINTER_IDS = [
   "DE888",
   "DE1515",
   "DE1718",
   "DE1719",
   "DE1720",
-])
+]
+const POWDER_PLANNER_PROJECT_PRINTERS = new Set(NOT_RUNNING_PRINTER_IDS)
 
 // Each 610kg powder delivery is split 4 ways across printers, so every lot
 // family shows up as up to 4 sibling lot numbers (-1 to -4).
@@ -340,14 +341,42 @@ export function lotFamilyColorClass(lotFamily: string | null | undefined): strin
 
 export type PowderPlannerRow = {
   printerId: string
-  state: "Running" | "Projects"
+  state: "Running" | "Not Running"
   topUpCount: number | null
   cycleCount: number | null
   currentLot: string | null
   nextQualifiedLot: string | null
   nextIpmLot: string | null
-  daysToNewPowder: number | null
-  approxDateNewPowder: string | null
+}
+
+// The three real shift schedules a printer can run — 24 hours a day, but
+// only on this many days per week. Fewer active days per week means the
+// same number of remaining builds takes more calendar days.
+export type ShiftMode = "24/7" | "24/6" | "24/5"
+export const SHIFT_MODE_RUN_DAYS: Record<ShiftMode, number> = {
+  "24/7": 7,
+  "24/6": 6,
+  "24/5": 5,
+}
+
+// Mirrors the real tracker's math one-for-one: with 30 builds per topup
+// segment and 4 segments per full cycle, a printer at topup N / cycle
+// count C has (3-N) full 30-build segments left plus (30-C) builds left in
+// its current one — at ~12h/build (9h build + 3h changeover) run every
+// calendar day, that's ((3-N)*30 + (30-C)) * 0.5 days on a 24/7 schedule.
+// Running fewer days a week stretches that out proportionally (7 / run
+// days), since the same builds are now spread across more calendar days.
+export function computeDaysToNewPowder(
+  topUpCount: number,
+  cycleCount: number,
+  runDaysPerWeek: number = 7
+): number {
+  const buildsRemaining = (3 - topUpCount) * 30 + (30 - cycleCount)
+  return Math.round(buildsRemaining * 0.5 * (7 / runDaysPerWeek) * 10) / 10
+}
+
+export function computeApproxDateNewPowder(daysToNewPowder: number): string {
+  return addFractionalDays(POWDER_PLANNER_REPORT_DATE, daysToNewPowder).toISOString()
 }
 
 // Every physical portion across the 5 main delivery families — 4 splits
@@ -391,14 +420,12 @@ export function generatePowderPlannerRows(): PowderPlannerRow[] {
     if (POWDER_PLANNER_PROJECT_PRINTERS.has(printerId)) {
       rows.set(printerId, {
         printerId,
-        state: "Projects",
+        state: "Not Running",
         topUpCount: null,
         cycleCount: null,
         currentLot: null,
         nextQualifiedLot: null,
         nextIpmLot: null,
-        daysToNewPowder: null,
-        approxDateNewPowder: null,
       })
     }
   })
@@ -406,12 +433,6 @@ export function generatePowderPlannerRows(): PowderPlannerRow[] {
   runningPrinters.forEach((printerId, runningIndex) => {
     const topUpCount = Math.floor(scatteredFraction(runningIndex, "topup") * 4)
     const cycleCount = Math.floor(scatteredFraction(runningIndex, "cycle") * 30)
-    const daysToNewPowder =
-      Math.round(((3 - topUpCount) * 30 + (30 - cycleCount)) * 0.5 * 10) / 10
-    const approxDateNewPowder = addFractionalDays(
-      POWDER_PLANNER_REPORT_DATE,
-      daysToNewPowder
-    ).toISOString()
 
     rows.set(printerId, {
       printerId,
@@ -421,10 +442,16 @@ export function generatePowderPlannerRows(): PowderPlannerRow[] {
       currentLot: currentPortions[runningIndex],
       nextQualifiedLot: null,
       nextIpmLot: null,
-      daysToNewPowder,
-      approxDateNewPowder,
     })
   })
+
+  // An IPM qualifies the powder FAMILY, not the individual physical split —
+  // it's the same batch of material regardless of which 150kg portion a
+  // given printer happens to run. So once any split of a family is already
+  // a printer's current lot (proof it's already in production, which means
+  // it was already qualified at some point), every other split of that same
+  // family is already-qualified too, not a fresh "needs IPM" case.
+  const qualifiedFamilies = new Set(currentPortions.map((lot) => lot.split("-")[0]))
 
   // Only as many printers as there are leftover portions get a queued
   // "next" lot lined up — matching the real tracker, where most rows
@@ -436,10 +463,11 @@ export function generatePowderPlannerRows(): PowderPlannerRow[] {
   printersWithNext.forEach((printerId, i) => {
     const row = rows.get(printerId)!
     const nextLot = nextPortions[i]
-    if (scatteredFraction(i, "needs-ipm") > 0.3) {
-      row.nextIpmLot = nextLot
-    } else {
+    const nextFamily = nextLot.split("-")[0]
+    if (qualifiedFamilies.has(nextFamily)) {
       row.nextQualifiedLot = nextLot
+    } else {
+      row.nextIpmLot = nextLot
     }
   })
 
@@ -491,6 +519,7 @@ export function generatePowderStorageBins(count: number = 25): PowderStorageBin[
 
 export type LiveScheduleBlockType =
   | "Build"
+  | "Unload"
   | "BuildSetup"
   | "PowderTopup"
   | "IpmCoupon"
@@ -510,7 +539,7 @@ export type LiveScheduleBlock = {
 
 export type PrinterLiveSchedule = {
   printerId: string
-  state: "Running" | "Projects"
+  state: "Running" | "Not Running"
   topUpCount: number | null
   cycleCount: number | null
   blocks: LiveScheduleBlock[]
@@ -524,9 +553,11 @@ export const LIVE_SCHEDULE_WINDOW_HOURS = 240 // 10 days of scrollable data
 const LIVE_SHIFT_LENGTH_HOURS = 12
 const LIVE_SHIFT_CUTOFF_HOURS = 2.5 // won't start a build this close to shift end
 const LIVE_BUILD_HOUR_OPTIONS = [8, 8, 9, 9, 9, 10, 10, 11, 11, 12] // the ~10 real build sizes
-const LIVE_MAINTENANCE_SLOT_HOURS = 6
 const LIVE_MAINTENANCE_BLOCK_HOURS = 4
 const LIVE_MAINTENANCE_LABELS = ["Maintenance 4hr clean down", "Maintenance 4hr check"]
+// Real cadence is monthly/quarterly; compressed here (as with the powder
+// cycle elsewhere in this file) so a demo-sized scroll window shows some.
+const LIVE_MAINTENANCE_EVERY_N_BUILDS = 8
 
 function hoursIntoShift(date: Date): number {
   const hoursSinceAnchor =
@@ -545,49 +576,36 @@ function applyShiftCutoff(candidateStart: Date): Date {
   return remaining < LIVE_SHIFT_CUTOFF_HOURS ? addHours(candidateStart, remaining) : candidateStart
 }
 
-// One global rotation through every running printer, spaced so no two
-// printers are ever down at once — real maintenance is monthly/quarterly,
-// compressed here (as with the powder cycle elsewhere in this file) so a
-// demo-sized scroll window actually shows some.
-function generateLiveMaintenanceBlocks(
-  runningPrinters: string[]
-): Map<string, LiveScheduleBlock[]> {
-  const blocksByPrinter = new Map<string, LiveScheduleBlock[]>()
-  runningPrinters.forEach((id) => blocksByPrinter.set(id, []))
-  if (runningPrinters.length === 0) return blocksByPrinter
-
-  let slotIndex = 0
-  let cursorHours = LIVE_MAINTENANCE_SLOT_HOURS
-  while (cursorHours + LIVE_MAINTENANCE_BLOCK_HOURS < LIVE_SCHEDULE_WINDOW_HOURS) {
-    const printerId = runningPrinters[slotIndex % runningPrinters.length]
-    const start = addHours(LIVE_SCHEDULE_ANCHOR, cursorHours)
-    const end = addHours(start, LIVE_MAINTENANCE_BLOCK_HOURS)
-    blocksByPrinter.get(printerId)!.push({
-      type: "Maintenance",
-      start: start.toISOString(),
-      end: end.toISOString(),
-      label: LIVE_MAINTENANCE_LABELS[slotIndex % LIVE_MAINTENANCE_LABELS.length],
-    })
-    slotIndex++
-    cursorHours += LIVE_MAINTENANCE_SLOT_HOURS
-  }
-
-  return blocksByPrinter
+// Whether this printer's Nth build is due for maintenance — staggered per
+// printer (via a per-printer offset) so they don't all come due on the same
+// build number, though the real guarantee against two printers landing in
+// maintenance at once comes from pushPastTaken below, not from this offset.
+function isMaintenanceDueBuild(printerIndex: number, buildSeq: number): boolean {
+  const offset = Math.floor(
+    scatteredFraction(printerIndex, "live-maintenance-offset") *
+      LIVE_MAINTENANCE_EVERY_N_BUILDS
+  )
+  return (
+    (buildSeq - offset + LIVE_MAINTENANCE_EVERY_N_BUILDS) %
+      LIVE_MAINTENANCE_EVERY_N_BUILDS ===
+    0
+  )
 }
 
-// If [start, start+durationHours) would overlap any of this printer's own
-// maintenance windows, jumps past it (and re-checks, in case that lands in
-// another one) — a build/setup/topup/IPM block should never visually
-// overlap that same printer's maintenance block.
-function pushPastMaintenance(
+// If [start, start+durationHours) would overlap any window already in
+// `taken`, jumps past it (and re-checks, in case that lands in another one).
+// Used only to keep two different printers from ever being in maintenance
+// at the same time — printers are processed one at a time, each checking
+// against every earlier printer's already-placed maintenance windows.
+function pushPastTaken(
   start: Date,
   durationHours: number,
-  maintenanceBlocks: LiveScheduleBlock[]
+  taken: LiveScheduleBlock[]
 ): Date {
   let candidate = start
   for (let guard = 0; guard < 10; guard++) {
     const candidateEndMs = candidate.getTime() + durationHours * 60 * 60 * 1000
-    const overlapping = maintenanceBlocks.find((m) => {
+    const overlapping = taken.find((m) => {
       const mStart = new Date(m.start).getTime()
       const mEnd = new Date(m.end).getTime()
       return candidate.getTime() < mEnd && candidateEndMs > mStart
@@ -603,9 +621,9 @@ function generateSinglePrinterLiveSchedule(
   printerIndex: number,
   startTopUpCount: number,
   startCycleCount: number,
-  maintenanceBlocks: LiveScheduleBlock[]
+  takenMaintenanceWindows: LiveScheduleBlock[]
 ): LiveScheduleBlock[] {
-  const blocks: LiveScheduleBlock[] = [...maintenanceBlocks]
+  const blocks: LiveScheduleBlock[] = []
   const windowEndMs =
     LIVE_SCHEDULE_ANCHOR.getTime() + LIVE_SCHEDULE_WINDOW_HOURS * 60 * 60 * 1000
 
@@ -616,6 +634,7 @@ function generateSinglePrinterLiveSchedule(
     scatteredFraction(printerIndex, "live-family") * POWDER_LOT_FAMILIES.length
   )
   let buildSeq = 0
+  let maintenanceCount = 0
 
   while (cursor.getTime() < windowEndMs) {
     const buildNumber = cycleCount + 1
@@ -626,9 +645,7 @@ function generateSinglePrinterLiveSchedule(
             LIVE_BUILD_HOUR_OPTIONS.length
         )
       ]
-    let buildStart = pushPastMaintenance(cursor, buildHours, maintenanceBlocks)
-    buildStart = applyShiftCutoff(buildStart)
-    buildStart = pushPastMaintenance(buildStart, buildHours, maintenanceBlocks)
+    const buildStart = applyShiftCutoff(cursor)
     const buildEnd = addHours(buildStart, buildHours)
     const powderLot = `${POWDER_LOT_FAMILIES[familyIndex]}-${(printerIndex % 4) + 1}`
     const lotId = String(
@@ -643,7 +660,9 @@ function generateSinglePrinterLiveSchedule(
       type: "Build",
       start: buildStart.toISOString(),
       end: buildEnd.toISOString(),
-      label: `Build ${buildNumber} · Lot ${lotId} · Powder ${powderLot}`,
+      // Size here means the part/build size category (not shown yet — no
+      // real value for it exists), not the build's duration in hours.
+      label: `Build ${buildNumber} · Size —`,
       buildNumber,
       cycleTopUpCount: topUpCount,
       lotId,
@@ -654,6 +673,41 @@ function generateSinglePrinterLiveSchedule(
     cycleCount++
     buildSeq++
 
+    // Build unload — a mandatory 1h step right after every build, before
+    // whatever comes next.
+    const unloadStart = cursor
+    const unloadEnd = addHours(unloadStart, 1)
+    blocks.push({
+      type: "Unload",
+      start: unloadStart.toISOString(),
+      end: unloadEnd.toISOString(),
+      label: "Build unload",
+    })
+    cursor = unloadEnd
+
+    // Maintenance, when due, always sits right here — after this build's
+    // unload and before its setup — never anywhere else. Inserted directly
+    // rather than pre-placed at a fixed clock time and dodged around, so the
+    // ordering is guaranteed rather than incidental.
+    if (isMaintenanceDueBuild(printerIndex, buildSeq)) {
+      const maintenanceStart = pushPastTaken(
+        cursor,
+        LIVE_MAINTENANCE_BLOCK_HOURS,
+        takenMaintenanceWindows
+      )
+      const maintenanceEnd = addHours(maintenanceStart, LIVE_MAINTENANCE_BLOCK_HOURS)
+      const maintenanceBlock: LiveScheduleBlock = {
+        type: "Maintenance",
+        start: maintenanceStart.toISOString(),
+        end: maintenanceEnd.toISOString(),
+        label: LIVE_MAINTENANCE_LABELS[maintenanceCount % LIVE_MAINTENANCE_LABELS.length],
+      }
+      blocks.push(maintenanceBlock)
+      takenMaintenanceWindows.push(maintenanceBlock)
+      maintenanceCount++
+      cursor = maintenanceEnd
+    }
+
     if (cycleCount >= 30) {
       cycleCount = 0
       const wasFullCycle = topUpCount >= 3
@@ -661,7 +715,7 @@ function generateSinglePrinterLiveSchedule(
       if (wasFullCycle) {
         familyIndex = (familyIndex + 1) % POWDER_LOT_FAMILIES.length
         const newLot = `${POWDER_LOT_FAMILIES[familyIndex]}-${(printerIndex % 4) + 1}`
-        const ipmStart = pushPastMaintenance(cursor, IPM_BUILD_HOURS, maintenanceBlocks)
+        const ipmStart = cursor
         const ipmEnd = addHours(ipmStart, IPM_BUILD_HOURS)
         blocks.push({
           type: "IpmCoupon",
@@ -673,7 +727,7 @@ function generateSinglePrinterLiveSchedule(
         cursor = addHours(ipmEnd, IPM_CHANGEOVER_HOURS)
         topUpCount = 0
       } else {
-        const topupStart = pushPastMaintenance(cursor, 1, maintenanceBlocks)
+        const topupStart = cursor
         const topupEnd = addHours(topupStart, 1)
         blocks.push({
           type: "PowderTopup",
@@ -688,7 +742,7 @@ function generateSinglePrinterLiveSchedule(
     }
 
     const setupHours = 1 + seededFraction(`live-setup-${printerId}-${buildSeq}`)
-    const setupStart = pushPastMaintenance(cursor, setupHours, maintenanceBlocks)
+    const setupStart = cursor
     const setupEnd = addHours(setupStart, setupHours)
     blocks.push({
       type: "BuildSetup",
@@ -709,16 +763,16 @@ function generateSinglePrinterLiveSchedule(
 // as one consistent picture rather than two independent random datasets.
 export function generatePrinterLiveSchedules(): PrinterLiveSchedule[] {
   const plannerRows = generatePowderPlannerRows()
-  const runningPrinters = plannerRows
-    .filter((row) => row.state === "Running")
-    .map((row) => row.printerId)
-  const maintenanceByPrinter = generateLiveMaintenanceBlocks(runningPrinters)
+  // Shared across every printer below (mutated in place, one printer at a
+  // time, in roster order) so no two printers ever end up in maintenance at
+  // the same time — see pushPastTaken.
+  const takenMaintenanceWindows: LiveScheduleBlock[] = []
 
   return plannerRows.map((row, index): PrinterLiveSchedule => {
-    if (row.state === "Projects") {
+    if (row.state === "Not Running") {
       return {
         printerId: row.printerId,
-        state: "Projects",
+        state: "Not Running",
         topUpCount: null,
         cycleCount: null,
         blocks: [],
@@ -735,7 +789,7 @@ export function generatePrinterLiveSchedules(): PrinterLiveSchedule[] {
         index,
         row.topUpCount ?? 0,
         row.cycleCount ?? 0,
-        maintenanceByPrinter.get(row.printerId) ?? []
+        takenMaintenanceWindows
       ),
     }
   })

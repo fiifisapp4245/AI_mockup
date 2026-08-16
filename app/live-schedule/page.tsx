@@ -7,9 +7,11 @@ import {
   generatePrinterLiveSchedules,
   LIVE_SCHEDULE_ANCHOR_ISO,
   LIVE_SCHEDULE_WINDOW_HOURS,
+  NOT_RUNNING_PRINTER_IDS,
   type LiveScheduleBlock,
   type LiveScheduleBlockType,
 } from "@/lib/mock-data"
+import { usePrinterVisibility } from "@/lib/printer-visibility"
 
 const PX_PER_HOUR = 46
 const ROW_HEIGHT = "h-7"
@@ -19,6 +21,7 @@ const LABEL_COLUMN_WIDTH = 190
 
 const BLOCK_COLOR: Record<LiveScheduleBlockType, string> = {
   Build: "bg-sky-400 text-sky-950",
+  Unload: "bg-teal-400 text-teal-950",
   BuildSetup: "bg-amber-400 text-amber-950",
   PowderTopup: "bg-yellow-300 text-yellow-950",
   IpmCoupon: "bg-indigo-600 text-indigo-50",
@@ -32,6 +35,11 @@ const CHAT_SUGGESTIONS = [
 ]
 
 const CHAT_PROMPTS: ChatPrompt[] = [
+  {
+    keywords: ["unload", "teal"],
+    answer:
+      "Teal blocks are the build unload — a fixed 1h step right after every build, before whatever comes next. When a maintenance window is due, it lands in the gap after the unload and before build setup, rather than the unload waiting on it.",
+  },
   {
     keywords: ["maintenance", "down", "offline", "clean down", "check"],
     answer:
@@ -166,7 +174,12 @@ function LiveScheduleRow({
 }
 
 export default function LiveSchedulePage() {
-  const schedules = React.useMemo(() => generatePrinterLiveSchedules(), [])
+  const allSchedules = React.useMemo(() => generatePrinterLiveSchedules(), [])
+  const { isVisible } = usePrinterVisibility(NOT_RUNNING_PRINTER_IDS)
+  const schedules = React.useMemo(
+    () => allSchedules.filter((schedule) => isVisible(schedule.printerId)),
+    [allSchedules, isVisible]
+  )
   const anchorMs = React.useMemo(
     () => new Date(LIVE_SCHEDULE_ANCHOR_ISO).getTime(),
     []
@@ -206,6 +219,10 @@ export default function LiveSchedulePage() {
             <span className="flex items-center gap-1.5">
               <span className="size-2.5 rounded-[2px] bg-sky-400" />
               Build
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="size-2.5 rounded-[2px] bg-teal-400" />
+              Build unload
             </span>
             <span className="flex items-center gap-1.5">
               <span className="size-2.5 rounded-[2px] bg-amber-400" />
@@ -258,21 +275,21 @@ export default function LiveSchedulePage() {
               <span>Cycle</span>
             </div>
             {schedules.map((schedule) => {
-              const isProjects = schedule.state === "Projects"
+              const isNotRunning = schedule.state === "Not Running"
               return (
                 <div
                   key={schedule.printerId}
-                  className={`flex items-center gap-3 border-b px-3 text-sm last:border-0 ${isProjects ? "bg-rose-50 dark:bg-rose-950/30" : ""}`}
+                  className={`flex items-center gap-3 border-b px-3 text-sm last:border-0 ${isNotRunning ? "bg-rose-50 dark:bg-rose-950/30" : ""}`}
                   style={{ height: ROW_HEIGHT_PX }}
                 >
                   <span
-                    className={`w-20 font-medium ${isProjects ? "text-rose-600 dark:text-rose-400" : ""}`}
+                    className={`w-20 font-medium ${isNotRunning ? "text-rose-600 dark:text-rose-400" : ""}`}
                   >
                     {schedule.printerId}
                   </span>
-                  {isProjects ? (
+                  {isNotRunning ? (
                     <span className="text-xs font-medium text-rose-600 dark:text-rose-400">
-                      Projects
+                      Not Running
                     </span>
                   ) : (
                     <>
@@ -322,14 +339,14 @@ export default function LiveSchedulePage() {
               </div>
 
               {schedules.map((schedule) => {
-                const isProjects = schedule.state === "Projects"
+                const isNotRunning = schedule.state === "Not Running"
                 return (
                   <div
                     key={schedule.printerId}
-                    className={`flex items-center border-b px-0 last:border-0 ${isProjects ? "bg-rose-50 dark:bg-rose-950/30" : ""}`}
+                    className={`flex items-center border-b px-0 last:border-0 ${isNotRunning ? "bg-rose-50 dark:bg-rose-950/30" : ""}`}
                     style={{ height: ROW_HEIGHT_PX }}
                   >
-                    {isProjects ? (
+                    {isNotRunning ? (
                       <div style={{ width: totalWidth, height: 20 }} />
                     ) : (
                       <LiveScheduleRow
