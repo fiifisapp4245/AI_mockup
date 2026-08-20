@@ -14,6 +14,17 @@ import {
   type ShiftMode,
 } from "@/lib/mock-data"
 import { usePrinterVisibility } from "@/lib/printer-visibility"
+import { useCustomPrinters, type CustomPrinter } from "@/lib/custom-printers"
+import { usePrinterStateOverrides } from "@/lib/printer-state-overrides"
+import { Input } from "@/components/ui/input"
+import { Button } from "@/components/ui/button"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 
 const SHIFT_MODES: ShiftMode[] = ["24/7", "24/6", "24/5"]
 
@@ -45,9 +56,14 @@ const CHAT_PROMPTS: ChatPrompt[] = [
       "A lot listed under \"Next – Need IPM First\" hasn't been qualified on any printer yet, so its first use there requires a ~6h/1h IPM build before normal production resumes. A lot under \"Next – Qualified Powder\" means another printer already ran the IPM, so it can swap in with no extra qualification build. The column it's in is what tells you the status — badge color is unrelated, it just marks lot family.",
   },
   {
-    keywords: ["project", "offline", "not running", "idle"],
+    keywords: ["add printer", "register", "new printer", "build volume", "hopper capacity", "laser power"],
     answer:
-      "Rows marked \"Not Running\" aren't currently in the production rotation, so there's nothing to track for them — they're excluded from the days/date columns.",
+      "The Add Printer section registers a machine's spec sheet — model, build volume, hopper capacity, laser power — for reference. It doesn't add the printer to the tracker table or Live Schedule, since neither has a production/topup history to simulate for a printer that was just registered.",
+  },
+  {
+    keywords: ["project", "offline", "not running", "idle", "printer state", "dropdown"],
+    answer:
+      "Printer State is a dropdown you can switch per row — Running or Not Running. It's independent of the powder data: a printer can have powder loaded and tracked (top up count, cycle count, current lot, days to new powder) while marked Not Running, since those columns reflect what's assigned to the powder, not whether the printer happens to be running right now.",
   },
   {
     keywords: ["storage", "bin", "cabinet", "pow"],
@@ -79,13 +95,20 @@ function lotFamilyOf(lot: string | null): string | null {
   return lot ? lot.split("-")[0] : null
 }
 
-function LotBadge({ lot }: { lot: string | null }) {
+function LotBadge({
+  lot,
+  stripSuffix = false,
+}: {
+  lot: string | null
+  stripSuffix?: boolean
+}) {
   if (!lot) return <span className="text-muted-foreground">—</span>
+  const family = lotFamilyOf(lot)
   return (
     <span
-      className={`rounded-md border px-1.5 py-0.5 font-mono text-xs ${lotFamilyColorClass(lotFamilyOf(lot))}`}
+      className={`rounded-md border px-1.5 py-0.5 font-mono text-xs ${lotFamilyColorClass(family)}`}
     >
-      {lot}
+      {stripSuffix ? family : lot}
     </span>
   )
 }
@@ -149,16 +172,173 @@ function ShiftModeToggle({
   )
 }
 
+const EMPTY_FORM = {
+  printerId: "",
+  model: "",
+  buildVolume: "",
+  hopperCapacityKg: "",
+  laserPowerSpec: "",
+}
+
+function AddPrinterForm({
+  printers,
+  onAdd,
+  onRemove,
+}: {
+  printers: CustomPrinter[]
+  onAdd: (printer: typeof EMPTY_FORM) => void
+  onRemove: (id: string) => void
+}) {
+  const [form, setForm] = React.useState(EMPTY_FORM)
+
+  const updateField = (field: keyof typeof EMPTY_FORM) => (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => setForm((prev) => ({ ...prev, [field]: e.target.value }))
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!form.printerId.trim()) return
+    onAdd(form)
+    setForm(EMPTY_FORM)
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <h2 className="text-sm font-medium">Add Printer</h2>
+      <p className="text-xs text-muted-foreground">
+        Register a new printer&apos;s spec sheet — build volume, powder
+        hopper capacity, and laser power/build rate. This is a reference
+        registry only; it doesn&apos;t add the printer to the tracker table
+        below or to Live Schedule.
+      </p>
+
+      <form
+        onSubmit={handleSubmit}
+        className="grid grid-cols-2 gap-3 rounded-lg border p-3 sm:grid-cols-3 lg:grid-cols-6"
+      >
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-muted-foreground" htmlFor="printerId">
+            Printer ID
+          </label>
+          <Input
+            id="printerId"
+            placeholder="DE2001"
+            value={form.printerId}
+            onChange={updateField("printerId")}
+            required
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-muted-foreground" htmlFor="model">
+            Model / Manufacturer
+          </label>
+          <Input
+            id="model"
+            placeholder="EOS M290"
+            value={form.model}
+            onChange={updateField("model")}
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-muted-foreground" htmlFor="buildVolume">
+            Build Volume (X x Y x Z mm)
+          </label>
+          <Input
+            id="buildVolume"
+            placeholder="250 x 250 x 325"
+            value={form.buildVolume}
+            onChange={updateField("buildVolume")}
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-muted-foreground" htmlFor="hopperCapacityKg">
+            Hopper Capacity (kg)
+          </label>
+          <Input
+            id="hopperCapacityKg"
+            placeholder="70"
+            value={form.hopperCapacityKg}
+            onChange={updateField("hopperCapacityKg")}
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-muted-foreground" htmlFor="laserPowerSpec">
+            Laser Power / Build Rate
+          </label>
+          <Input
+            id="laserPowerSpec"
+            placeholder="400W, 40cm3/h"
+            value={form.laserPowerSpec}
+            onChange={updateField("laserPowerSpec")}
+          />
+        </div>
+        <div className="flex items-end">
+          <Button type="submit" className="w-full">
+            Add Printer
+          </Button>
+        </div>
+      </form>
+
+      {printers.length > 0 && (
+        <div className="overflow-x-auto rounded-lg border">
+          <table className="w-full min-w-[720px] border-collapse text-sm">
+            <thead>
+              <tr className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
+                <th className="px-3 py-2 font-medium">Printer ID</th>
+                <th className="px-3 py-2 font-medium">Model</th>
+                <th className="px-3 py-2 font-medium">Build Volume</th>
+                <th className="px-3 py-2 font-medium">Hopper Capacity</th>
+                <th className="px-3 py-2 font-medium">Laser Power / Build Rate</th>
+                <th className="px-3 py-2 font-medium" />
+              </tr>
+            </thead>
+            <tbody>
+              {printers.map((printer) => (
+                <tr key={printer.id} className="border-b last:border-0">
+                  <td className="px-3 py-2 font-medium">{printer.printerId}</td>
+                  <td className="px-3 py-2">{printer.model || "—"}</td>
+                  <td className="px-3 py-2">{printer.buildVolume || "—"}</td>
+                  <td className="px-3 py-2">
+                    {printer.hopperCapacityKg ? `${printer.hopperCapacityKg} kg` : "—"}
+                  </td>
+                  <td className="px-3 py-2">{printer.laserPowerSpec || "—"}</td>
+                  <td className="px-3 py-2 text-right">
+                    <button
+                      type="button"
+                      onClick={() => onRemove(printer.id)}
+                      className="text-xs text-muted-foreground hover:text-destructive"
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function PowderPlannerPage() {
   const rows = React.useMemo(() => generatePowderPlannerRows(), [])
   const bins = React.useMemo(() => generatePowderStorageBins(), [])
   const { isVisible, toggle } = usePrinterVisibility(NOT_RUNNING_PRINTER_IDS)
+  const { printers: customPrinters, addPrinter, removePrinter } = useCustomPrinters()
+  const { getState, setState } = usePrinterStateOverrides()
   const [shiftMode, setShiftMode] = React.useState<ShiftMode>("24/7")
   const runDaysPerWeek = SHIFT_MODE_RUN_DAYS[shiftMode]
 
   return (
     <div className="flex gap-6">
       <div className="flex min-w-0 flex-1 flex-col gap-8">
+        <AddPrinterForm
+          printers={customPrinters}
+          onAdd={addPrinter}
+          onRemove={removePrinter}
+        />
+
         <div className="flex flex-col gap-3">
           <h2 className="text-sm font-medium">Printer Visibility</h2>
           <p className="text-xs text-muted-foreground">
@@ -215,7 +395,8 @@ export default function PowderPlannerPage() {
               </thead>
               <tbody>
                 {rows.map((row) => {
-                  const isNotRunning = row.state === "Not Running"
+                  const state = getState(row.printerId, row.state)
+                  const isNotRunning = state === "Not Running"
                   const daysToNewPowder =
                     row.topUpCount !== null && row.cycleCount !== null
                       ? computeDaysToNewPowder(row.topUpCount, row.cycleCount, runDaysPerWeek)
@@ -254,15 +435,26 @@ export default function PowderPlannerPage() {
                         {formatDate(approxDateNewPowder)}
                       </td>
                       <td className="px-3 py-2">
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                            isNotRunning
-                              ? "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
-                              : "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
-                          }`}
+                        <Select
+                          value={state}
+                          onValueChange={(value) =>
+                            setState(row.printerId, value as "Running" | "Not Running")
+                          }
                         >
-                          {row.state}
-                        </span>
+                          <SelectTrigger
+                            className={`h-7 w-[130px] rounded-full border-0 px-2.5 text-xs font-medium ${
+                              isNotRunning
+                                ? "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
+                                : "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                            }`}
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="Running">Running</SelectItem>
+                            <SelectItem value="Not Running">Not Running</SelectItem>
+                          </SelectContent>
+                        </Select>
                       </td>
                     </tr>
                   )
@@ -285,7 +477,6 @@ export default function PowderPlannerPage() {
                   <th className="px-3 py-2 font-medium">Bin</th>
                   <th className="px-3 py-2 font-medium">kg Available</th>
                   <th className="px-3 py-2 font-medium">Lot</th>
-                  <th className="px-3 py-2 font-medium">Notes</th>
                 </tr>
               </thead>
               <tbody>
@@ -296,10 +487,7 @@ export default function PowderPlannerPage() {
                       {bin.kg > 0 ? bin.kg : "—"}
                     </td>
                     <td className="px-3 py-2">
-                      <LotBadge lot={bin.lot} />
-                    </td>
-                    <td className="px-3 py-2 text-xs text-muted-foreground">
-                      {bin.note ?? "—"}
+                      <LotBadge lot={bin.lot} stripSuffix />
                     </td>
                   </tr>
                 ))}

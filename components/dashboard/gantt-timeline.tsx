@@ -12,7 +12,6 @@ const SEGMENT_COLOR: Record<GanttSegment["type"], string> = {
   Ahead: "bg-emerald-500",
   Leave: "bg-rose-400",
   Maintenance: "bg-slate-500",
-  StartOffset: "bg-gray-400",
 }
 
 const SEGMENT_LABEL: Record<GanttSegment["type"], string> = {
@@ -23,7 +22,6 @@ const SEGMENT_LABEL: Record<GanttSegment["type"], string> = {
   Ahead: "Ahead of plan",
   Leave: "Leave",
   Maintenance: "Maintenance",
-  StartOffset: "Start Difference",
 }
 
 function segmentStyle(
@@ -49,7 +47,6 @@ function SegmentTooltip({ segment }: { segment: GanttSegment }) {
   const endDate = new Date(segment.end)
   const durationHours =
     (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60)
-  const showStartEnd = segment.type !== "StartOffset"
 
   return (
     <div className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 w-max -translate-x-1/2">
@@ -61,22 +58,18 @@ function SegmentTooltip({ segment }: { segment: GanttSegment }) {
           {SEGMENT_LABEL[segment.type]}
         </div>
         <div className="grid gap-1">
-          {showStartEnd && (
-            <>
-              <div className="flex items-center justify-between gap-4">
-                <span className="text-muted-foreground">Start</span>
-                <span className="font-mono text-foreground tabular-nums">
-                  {startDate.toLocaleString()}
-                </span>
-              </div>
-              <div className="flex items-center justify-between gap-4">
-                <span className="text-muted-foreground">End</span>
-                <span className="font-mono text-foreground tabular-nums">
-                  {endDate.toLocaleString()}
-                </span>
-              </div>
-            </>
-          )}
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-muted-foreground">Start</span>
+            <span className="font-mono text-foreground tabular-nums">
+              {startDate.toLocaleString()}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-muted-foreground">End</span>
+            <span className="font-mono text-foreground tabular-nums">
+              {endDate.toLocaleString()}
+            </span>
+          </div>
           <div className="flex items-center justify-between gap-4">
             <span className="text-muted-foreground">Duration</span>
             <span className="font-mono text-foreground tabular-nums">
@@ -205,12 +198,10 @@ export function GanttLegend({
   showDelta = false,
   showLeave = false,
   showMaintenance = false,
-  showStartOffset = false,
 }: {
   showDelta?: boolean
   showLeave?: boolean
   showMaintenance?: boolean
-  showStartOffset?: boolean
 } = {}) {
   return (
     <div className="flex items-center gap-4 text-xs text-muted-foreground">
@@ -245,12 +236,6 @@ export function GanttLegend({
         <span className="flex items-center gap-1.5">
           <span className="size-2.5 rounded-[2px] bg-slate-500" />
           Maintenance
-        </span>
-      )}
-      {showStartOffset && (
-        <span className="flex items-center gap-1.5">
-          <span className="size-2.5 rounded-[2px] bg-gray-400" />
-          Start Difference
         </span>
       )}
     </div>

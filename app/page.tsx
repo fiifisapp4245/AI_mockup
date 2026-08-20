@@ -2,9 +2,16 @@
 
 import * as React from "react"
 
-import { FilterGroup, PrinterFilter } from "@/components/dashboard/filters"
+import {
+  DateRangeFilter,
+  FilterGroup,
+  PrinterFilter,
+} from "@/components/dashboard/filters"
 import { KpiCard } from "@/components/dashboard/kpi-card"
-import { getKpiPlanningSummary, getKpiSummary } from "@/lib/mock-data"
+import {
+  getKpiPlanningSummaryForRange,
+  getKpiSummaryForRange,
+} from "@/lib/mock-data"
 
 function kpiTrend(
   actual: number,
@@ -18,16 +25,28 @@ function kpiTrend(
 
 export default function OverviewPage() {
   const [printer, setPrinter] = React.useState("3")
+  const [start, setStart] = React.useState(new Date(2025, 3, 1))
+  const [end, setEnd] = React.useState(new Date(2025, 5, 30))
 
-  const kpiSummary = React.useMemo(() => getKpiSummary(printer), [printer])
+  const kpiSummary = React.useMemo(
+    () => getKpiSummaryForRange(printer, start.toISOString(), end.toISOString()),
+    [printer, start, end]
+  )
   const kpiPlanningSummary = React.useMemo(
-    () => getKpiPlanningSummary(printer),
-    [printer]
+    () => getKpiPlanningSummaryForRange(start.toISOString(), end.toISOString()),
+    [start, end]
   )
 
   return (
     <div className="flex flex-col gap-8">
       <FilterGroup>
+        <DateRangeFilter
+          label="Date"
+          start={start}
+          end={end}
+          onChangeStart={setStart}
+          onChangeEnd={setEnd}
+        />
         <PrinterFilter value={printer} onChange={setPrinter} />
       </FilterGroup>
 

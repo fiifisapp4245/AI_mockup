@@ -6,7 +6,6 @@ import {
   Line,
   LineChart,
   ReferenceArea,
-  ReferenceLine,
   XAxis,
   YAxis,
 } from "recharts"
@@ -29,7 +28,6 @@ import {
   generatePowderMassSeries,
   generateRuntimeBuildSpans,
   generateRuntimeSeries,
-  POWDER_TOPUP_THRESHOLD_KG,
 } from "@/lib/mock-data"
 
 const SYNC_ID = "printer-runtime-topup"
@@ -51,11 +49,6 @@ const CHAT_PROMPTS: ChatPrompt[] = [
     keywords: ["topup", "top-up", "top up", "powder", "mass", "kg"],
     answer:
       "The powder hopper starts full at 70kg and drains build-by-build (flat during changeover, since no powder is used then) — each sharp jump back up is a topup, which fires every 30 builds.",
-  },
-  {
-    keywords: ["late", "overrun", "red", "highlight", "shaded"],
-    answer:
-      "Red-shaded bands mark a late topup — mass dropped below the threshold line before that topup actually fired. The dashed threshold line and the red-highlighted stretch of the mass line pinpoint exactly how far below it ran and for how long.",
   },
   {
     keywords: ["compare", "comparison", "vs", "versus", "planning", "plan"],
@@ -138,7 +131,7 @@ function fillGrid<T extends { timestamp: number }>(
 // surrounding real points instead of holding the earlier one flat, so it
 // lands exactly on the existing line instead of introducing a fake stair
 // step.
-function fillGridLinear<T extends { timestamp: number; massKg: number; belowThreshold: boolean }>(
+function fillGridLinear<T extends { timestamp: number; massKg: number }>(
   points: T[],
   gridTimes: number[]
 ): T[] {
@@ -167,12 +160,7 @@ function fillGridLinear<T extends { timestamp: number; massKg: number; belowThre
           ((t - before.timestamp) / (after.timestamp - before.timestamp)) *
             (after.massKg - before.massKg)
 
-    additions.push({
-      ...before,
-      timestamp: t,
-      massKg,
-      belowThreshold: massKg < POWDER_TOPUP_THRESHOLD_KG,
-    })
+    additions.push({ ...before, timestamp: t, massKg })
   }
 
   return [...points, ...additions].sort((a, b) => a.timestamp - b.timestamp)
@@ -391,31 +379,13 @@ export default function RuntimePage() {
   const powderSeries = React.useMemo(() => generatePowderMassSeries(printer), [printer])
 
   const powderMassData = React.useMemo(() => {
-    const points = powderSeries.points.map((point) => ({
+    const points = powderSeries.map((point) => ({
       ...point,
       timestamp: new Date(point.date).getTime(),
     }))
     const clipped = clipToWindow(points, domainStart, domainEnd)
-    const filled = fillGridLinear(clipped, syncGridTimes)
-    // A second, overlaid line drawn only across below-threshold stretches —
-    // null everywhere else so it breaks instead of connecting across a
-    // whole on-time run — to recolor just those segments red.
-    return filled.map((point) => ({
-      ...point,
-      alertMassKg: point.belowThreshold ? point.massKg : null,
-    }))
+    return fillGridLinear(clipped, syncGridTimes)
   }, [powderSeries, domainStart, domainEnd, syncGridTimes])
-
-  // Late-topup windows (mass ran below threshold before that topup fired),
-  // clipped to the visible date range so a ReferenceArea can shade them.
-  const lateTopupWindows = React.useMemo(() => {
-    return powderSeries.lateWindows
-      .map((window) => ({
-        start: Math.max(new Date(window.start).getTime(), domainStart),
-        end: Math.min(new Date(window.end).getTime(), domainEnd),
-      }))
-      .filter((window) => window.start < window.end)
-  }, [powderSeries, domainStart, domainEnd])
 
   // Shared by both charts so their x-axis pixel columns line up exactly —
   // this is what lets the production build boundaries visually extend from
@@ -657,54 +627,12 @@ export default function RuntimePage() {
                   <ChartTooltipContent labelFormatter={tooltipLabelFormatter} />
                 }
               />
-              <ReferenceLine
-                y={POWDER_TOPUP_THRESHOLD_KG}
-                stroke="var(--destructive)"
-                strokeDasharray="4 4"
-                strokeOpacity={0.6}
-                label={{
-                  value: "Topup threshold",
-                  position: "insideBottomLeft",
-                  fill: "var(--destructive)",
-                  fontSize: 11,
-                }}
-              />
-              {lateTopupWindows.map((window, index) => (
-                <ReferenceArea
-                  key={`late-topup-${index}`}
-                  x1={window.start}
-                  x2={window.end}
-                  y1={0}
-                  y2={70}
-                  fill="var(--destructive)"
-                  fillOpacity={0.15}
-                  stroke="var(--destructive)"
-                  strokeOpacity={0.4}
-                  ifOverflow="hidden"
-                  label={{
-                    value: "Late topup",
-                    position: "insideTop",
-                    fill: "var(--destructive)",
-                    fontSize: 11,
-                  }}
-                />
-              ))}
               <Line
                 type="linear"
                 dataKey="massKg"
                 stroke="var(--color-massKg)"
                 strokeWidth={2}
                 dot={false}
-              />
-              <Line
-                type="linear"
-                dataKey="alertMassKg"
-                stroke="var(--destructive)"
-                strokeWidth={2}
-                dot={false}
-                connectNulls={false}
-                isAnimationActive={false}
-                legendType="none"
               />
             </LineChart>
           </ChartContainer>

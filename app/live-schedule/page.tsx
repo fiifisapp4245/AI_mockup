@@ -3,6 +3,7 @@
 import * as React from "react"
 
 import { ChatSidebar, type ChatPrompt } from "@/components/dashboard/chat-sidebar"
+import { DateRangeFilter, FilterGroup } from "@/components/dashboard/filters"
 import {
   generatePrinterLiveSchedules,
   LIVE_SCHEDULE_ANCHOR_ISO,
@@ -13,11 +14,21 @@ import {
 } from "@/lib/mock-data"
 import { usePrinterVisibility } from "@/lib/printer-visibility"
 
-const PX_PER_HOUR = 46
 const ROW_HEIGHT = "h-7"
 const ROW_HEIGHT_PX = 40
 const HEADER_HEIGHT_PX = 40
 const LABEL_COLUMN_WIDTH = 190
+
+// Hourly is the detailed, per-hour view already in place. Weekly and
+// Monthly zoom out further to see a much longer range at a glance —
+// individual blocks shrink to thin color slivers at that scale (hover
+// still shows the full tooltip), traded for range over detail.
+type ScheduleZoom = "Hourly" | "Weekly" | "Monthly"
+const ZOOM_PX_PER_HOUR: Record<ScheduleZoom, number> = {
+  Hourly: 46,
+  Weekly: 6,
+  Monthly: 2,
+}
 
 const BLOCK_COLOR: Record<LiveScheduleBlockType, string> = {
   Build: "bg-sky-400 text-sky-950",
@@ -27,6 +38,15 @@ const BLOCK_COLOR: Record<LiveScheduleBlockType, string> = {
   IpmCoupon: "bg-indigo-600 text-indigo-50",
   Maintenance: "bg-slate-500 text-slate-50",
 }
+
+const LEGEND_ITEMS: { type: LiveScheduleBlockType; swatch: string; label: string }[] = [
+  { type: "Build", swatch: "bg-sky-400", label: "Build" },
+  { type: "Unload", swatch: "bg-teal-400", label: "Build unload" },
+  { type: "BuildSetup", swatch: "bg-amber-400", label: "Build setup" },
+  { type: "PowderTopup", swatch: "bg-yellow-300", label: "Powder top-up" },
+  { type: "IpmCoupon", swatch: "bg-indigo-600", label: "IPM coupon build" },
+  { type: "Maintenance", swatch: "bg-slate-500", label: "Maintenance" },
+]
 
 const CHAT_SUGGESTIONS = [
   "Which printers are in maintenance right now?",
@@ -63,12 +83,22 @@ const CHAT_PROMPTS: ChatPrompt[] = [
   {
     keywords: ["reset", "day", "scroll", "window"],
     answer:
-      "The timeline resets visually at each 7:00 AM boundary (marked with a stronger divider) and scrolls forward across the full 10-day generated window — scroll right to see further out.",
+      "The timeline resets visually at each 7:00 AM boundary (marked with a stronger divider) and scrolls forward across the full 30-day generated window — scroll right to see further out, or use the Date filter above to jump straight to a range.",
   },
   {
     keywords: ["planned", "actual", "overrun", "maximo"],
     answer:
       "This view currently shows one live/actual schedule rather than a planned-vs-actual overlay, and maintenance dates are generated locally rather than pulled from Maximo — both are natural next steps once that integration exists.",
+  },
+  {
+    keywords: ["hourly", "weekly", "monthly", "zoom", "range"],
+    answer:
+      "The Hourly / Weekly / Monthly toggle switches how compressed the timeline is — Hourly is the detailed per-hour view, Weekly and Monthly zoom out further to show a much longer range at a glance (blocks shrink to thin color slivers; hover still shows the full detail).",
+  },
+  {
+    keywords: ["legend", "isolate", "filter type", "click", "only"],
+    answer:
+      "Click a legend swatch to isolate just that block type across every printer — click it again (or another swatch) to go back to showing everything.",
   },
 ]
 
@@ -131,28 +161,100 @@ function BlockTooltip({ block }: { block: LiveScheduleBlock }) {
   )
 }
 
+function ZoomToggle({
+  value,
+  onChange,
+}: {
+  value: ScheduleZoom
+  onChange: (zoom: ScheduleZoom) => void
+}) {
+  const zooms: ScheduleZoom[] = ["Hourly", "Weekly", "Monthly"]
+  return (
+    <div className="inline-flex items-center rounded-md border p-0.5 text-xs">
+      {zooms.map((zoom) => (
+        <button
+          key={zoom}
+          type="button"
+          onClick={() => onChange(zoom)}
+          className={`rounded px-2.5 py-1 font-medium transition-colors ${
+            value === zoom
+              ? "bg-foreground text-background"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          {zoom}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function LiveScheduleLegend({
+  activeType,
+  onToggle,
+}: {
+  activeType: LiveScheduleBlockType | null
+  onToggle: (type: LiveScheduleBlockType) => void
+}) {
+  return (
+    <div className="flex items-center gap-1 text-xs text-muted-foreground">
+      {LEGEND_ITEMS.map((item) => {
+        const isActive = activeType === item.type
+        const isDimmed = activeType !== null && !isActive
+        return (
+          <button
+            key={item.type}
+            type="button"
+            onClick={() => onToggle(item.type)}
+            className={`flex items-center gap-1.5 rounded px-1.5 py-1 transition-colors ${
+              isActive ? "bg-muted font-medium text-foreground" : ""
+            } ${isDimmed ? "opacity-40 hover:opacity-70" : ""}`}
+          >
+            <span className={`size-2.5 rounded-[2px] ${item.swatch}`} />
+            {item.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function LiveScheduleRow({
   blocks,
-  anchorMs,
+  domainStart,
+  domainEnd,
   totalWidth,
+  pxPerHour,
+  activeType,
 }: {
   blocks: LiveScheduleBlock[]
-  anchorMs: number
+  domainStart: number
+  domainEnd: number
   totalWidth: number
+  pxPerHour: number
+  activeType: LiveScheduleBlockType | null
 }) {
   const [hoveredIndex, setHoveredIndex] = React.useState<number | null>(null)
+
+  const visibleBlocks = blocks.filter((block) => {
+    const startMs = new Date(block.start).getTime()
+    const endMs = new Date(block.end).getTime()
+    const inRange = endMs > domainStart && startMs < domainEnd
+    const matchesType = !activeType || block.type === activeType
+    return inRange && matchesType
+  })
 
   return (
     <div
       className={`relative ${ROW_HEIGHT} rounded-sm bg-muted/40`}
       style={{ width: totalWidth }}
     >
-      {blocks.map((block, index) => {
+      {visibleBlocks.map((block, index) => {
         const startMs = new Date(block.start).getTime()
         const endMs = new Date(block.end).getTime()
-        const left = ((startMs - anchorMs) / (1000 * 60 * 60)) * PX_PER_HOUR
+        const left = ((startMs - domainStart) / (1000 * 60 * 60)) * pxPerHour
         const width = Math.max(
-          ((endMs - startMs) / (1000 * 60 * 60)) * PX_PER_HOUR,
+          ((endMs - startMs) / (1000 * 60 * 60)) * pxPerHour,
           6
         )
 
@@ -173,6 +275,11 @@ function LiveScheduleRow({
   )
 }
 
+const DEFAULT_START = new Date(LIVE_SCHEDULE_ANCHOR_ISO)
+const DEFAULT_END = new Date(
+  DEFAULT_START.getTime() + LIVE_SCHEDULE_WINDOW_HOURS * 60 * 60 * 1000
+)
+
 export default function LiveSchedulePage() {
   const allSchedules = React.useMemo(() => generatePrinterLiveSchedules(), [])
   const { isVisible } = usePrinterVisibility(NOT_RUNNING_PRINTER_IDS)
@@ -180,19 +287,39 @@ export default function LiveSchedulePage() {
     () => allSchedules.filter((schedule) => isVisible(schedule.printerId)),
     [allSchedules, isVisible]
   )
-  const anchorMs = React.useMemo(
-    () => new Date(LIVE_SCHEDULE_ANCHOR_ISO).getTime(),
-    []
-  )
-  const totalWidth = LIVE_SCHEDULE_WINDOW_HOURS * PX_PER_HOUR
+  const [zoom, setZoom] = React.useState<ScheduleZoom>("Hourly")
+  const [activeBlockType, setActiveBlockType] =
+    React.useState<LiveScheduleBlockType | null>(null)
+  const toggleActiveBlockType = (type: LiveScheduleBlockType) => {
+    setActiveBlockType((prev) => (prev === type ? null : type))
+  }
+  const [start, setStart] = React.useState(DEFAULT_START)
+  const [end, setEnd] = React.useState(DEFAULT_END)
+  const pxPerHour = ZOOM_PX_PER_HOUR[zoom]
+
+  const domainStart = start.getTime()
+  const domainEnd = end.getTime()
+  const visibleHours = Math.max((domainEnd - domainStart) / (1000 * 60 * 60), 0)
+  const totalWidth = visibleHours * pxPerHour
 
   const hourTicks = React.useMemo(
     () =>
-      Array.from({ length: LIVE_SCHEDULE_WINDOW_HOURS }, (_, hour) => {
-        const date = new Date(anchorMs + hour * 60 * 60 * 1000)
+      Array.from({ length: Math.ceil(visibleHours) }, (_, hour) => {
+        const date = new Date(domainStart + hour * 60 * 60 * 1000)
         return { hour, date, isDayStart: date.getHours() === 7 }
       }),
-    [anchorMs]
+    [domainStart, visibleHours]
+  )
+
+  // Weekly/Monthly zoom labels one tick per day instead of per hour — that
+  // many hourly divider lines at those scales would just be visual noise.
+  const dayTicks = React.useMemo(
+    () =>
+      Array.from({ length: Math.ceil(visibleHours / 24) }, (_, day) => {
+        const date = new Date(domainStart + day * 24 * 60 * 60 * 1000)
+        return { day, date }
+      }),
+    [domainStart, visibleHours]
   )
 
   // Two scrollbars, kept in sync — the main one sits below every printer
@@ -213,40 +340,32 @@ export default function LiveSchedulePage() {
   return (
     <div className="flex gap-6">
       <div className="flex min-w-0 flex-1 flex-col gap-3">
+        <FilterGroup>
+          <DateRangeFilter
+            label="Date"
+            start={start}
+            end={end}
+            onChangeStart={setStart}
+            onChangeEnd={setEnd}
+          />
+        </FilterGroup>
+
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-medium">Live Schedule</h2>
-          <div className="flex items-center gap-4 text-xs text-muted-foreground">
-            <span className="flex items-center gap-1.5">
-              <span className="size-2.5 rounded-[2px] bg-sky-400" />
-              Build
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="size-2.5 rounded-[2px] bg-teal-400" />
-              Build unload
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="size-2.5 rounded-[2px] bg-amber-400" />
-              Build setup
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="size-2.5 rounded-[2px] bg-yellow-300" />
-              Powder top-up
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="size-2.5 rounded-[2px] bg-indigo-600" />
-              IPM coupon build
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="size-2.5 rounded-[2px] bg-slate-500" />
-              Maintenance
-            </span>
+          <div className="flex items-center gap-3">
+            <h2 className="text-sm font-medium">Live Schedule</h2>
+            <ZoomToggle value={zoom} onChange={setZoom} />
           </div>
+          <LiveScheduleLegend
+            activeType={activeBlockType}
+            onToggle={toggleActiveBlockType}
+          />
         </div>
         <p className="text-xs text-muted-foreground">
-          Hourly, per-printer view of the live build schedule — resets
-          visually at each 7:00 AM boundary and scrolls forward across the
-          full generated window. Hover any block for its build number, cycle
-          top-up count, powder lot, and product ID.
+          Per-printer view of the live build schedule — resets visually at
+          each 7:00 AM boundary. Use the Hourly / Weekly / Monthly toggle to
+          zoom, the Date filter to jump to a range, and click a legend swatch
+          to isolate just that block type. Hover any block for its build
+          number, cycle top-up count, powder lot, and product ID.
         </p>
 
         {/* Top scrollbar, synced with the one below — offset by the label
@@ -317,25 +436,40 @@ export default function LiveSchedulePage() {
                 className="relative border-b bg-muted/40"
                 style={{ height: HEADER_HEIGHT_PX }}
               >
-                {hourTicks.map(({ hour, date, isDayStart }) => (
-                  <div
-                    key={hour}
-                    className={`absolute top-0 h-full border-r ${isDayStart ? "border-foreground/30" : "border-border/60"}`}
-                    style={{ left: hour * PX_PER_HOUR, width: PX_PER_HOUR }}
-                  >
-                    <span className="absolute left-0.5 top-1 whitespace-nowrap text-[10px] text-muted-foreground">
-                      {formatHourTick(date)}
-                    </span>
-                    {isDayStart && (
-                      <span className="absolute left-0.5 bottom-1 whitespace-nowrap text-[10px] font-medium text-foreground">
-                        {date.toLocaleDateString("en-US", {
-                          month: "short",
-                          day: "2-digit",
-                        })}
-                      </span>
-                    )}
-                  </div>
-                ))}
+                {zoom === "Hourly"
+                  ? hourTicks.map(({ hour, date, isDayStart }) => (
+                      <div
+                        key={hour}
+                        className={`absolute top-0 h-full border-r ${isDayStart ? "border-foreground/30" : "border-border/60"}`}
+                        style={{ left: hour * pxPerHour, width: pxPerHour }}
+                      >
+                        <span className="absolute left-0.5 top-1 whitespace-nowrap text-[10px] text-muted-foreground">
+                          {formatHourTick(date)}
+                        </span>
+                        {isDayStart && (
+                          <span className="absolute left-0.5 bottom-1 whitespace-nowrap text-[10px] font-medium text-foreground">
+                            {date.toLocaleDateString("en-US", {
+                              month: "short",
+                              day: "2-digit",
+                            })}
+                          </span>
+                        )}
+                      </div>
+                    ))
+                  : dayTicks.map(({ day, date }) => (
+                      <div
+                        key={day}
+                        className="absolute top-0 h-full border-r border-foreground/30"
+                        style={{ left: day * 24 * pxPerHour, width: 24 * pxPerHour }}
+                      >
+                        <span className="absolute left-0.5 bottom-1 whitespace-nowrap text-[10px] font-medium text-foreground">
+                          {date.toLocaleDateString("en-US", {
+                            month: "short",
+                            day: "2-digit",
+                          })}
+                        </span>
+                      </div>
+                    ))}
               </div>
 
               {schedules.map((schedule) => {
@@ -351,8 +485,11 @@ export default function LiveSchedulePage() {
                     ) : (
                       <LiveScheduleRow
                         blocks={schedule.blocks}
-                        anchorMs={anchorMs}
+                        domainStart={domainStart}
+                        domainEnd={domainEnd}
                         totalWidth={totalWidth}
+                        pxPerHour={pxPerHour}
+                        activeType={activeBlockType}
                       />
                     )}
                   </div>

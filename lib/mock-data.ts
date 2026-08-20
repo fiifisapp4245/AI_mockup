@@ -8,77 +8,6 @@ export type KpiSummary = {
   utilization: number
 }
 
-const KPI_PROFILES: Record<string, { actual: KpiSummary; planned: KpiSummary }> = {
-  "1": {
-    actual: {
-      availableHours: 1210,
-      totalBuilds: 58,
-      totalPrintHours: 498.6,
-      averageBuildHours: 8.6,
-      averageChangeOverHours: 9.8,
-      totalChangeOverHours: 568.4,
-      utilization: 39.6,
-    },
-    planned: {
-      availableHours: 1150,
-      totalBuilds: 62,
-      totalPrintHours: 520,
-      averageBuildHours: 8.25,
-      averageChangeOverHours: 8.5,
-      totalChangeOverHours: 511,
-      utilization: 44,
-    },
-  },
-  "2": {
-    actual: {
-      availableHours: 1325,
-      totalBuilds: 61,
-      totalPrintHours: 555.2,
-      averageBuildHours: 9.1,
-      averageChangeOverHours: 11.3,
-      totalChangeOverHours: 689.3,
-      utilization: 41.9,
-    },
-    planned: {
-      availableHours: 1275,
-      totalBuilds: 64,
-      totalPrintHours: 585,
-      averageBuildHours: 8.75,
-      averageChangeOverHours: 9.75,
-      totalChangeOverHours: 624,
-      utilization: 46,
-    },
-  },
-  "3": {
-    actual: {
-      availableHours: 1430,
-      totalBuilds: 65,
-      totalPrintHours: 612.03,
-      averageBuildHours: 9.42,
-      averageChangeOverHours: 12.77,
-      totalChangeOverHours: 817.12,
-      utilization: 42.82,
-    },
-    planned: {
-      availableHours: 1350,
-      totalBuilds: 70,
-      totalPrintHours: 650,
-      averageBuildHours: 9,
-      averageChangeOverHours: 10.5,
-      totalChangeOverHours: 750,
-      utilization: 48,
-    },
-  },
-}
-
-export function getKpiSummary(printerId: string = "3"): KpiSummary {
-  return (KPI_PROFILES[printerId] ?? KPI_PROFILES["3"]).actual
-}
-
-export function getKpiPlanningSummary(printerId: string = "3"): KpiSummary {
-  return (KPI_PROFILES[printerId] ?? KPI_PROFILES["3"]).planned
-}
-
 function addDays(date: Date, days: number) {
   const result = new Date(date)
   result.setDate(result.getDate() + days)
@@ -100,7 +29,6 @@ function addMinutes(date: Date, minutes: number) {
 export type PowderMassPoint = {
   date: string
   massKg: number
-  belowThreshold: boolean
 }
 
 // How far out the mock production/powder data is generated — both
@@ -117,18 +45,13 @@ const SEGMENT_BUILD_COUNTS = [30]
 const SEGMENTS_PER_CYCLE = 4
 const TOPUP_DURATION_MINUTES = 720 // 12h — long enough to read as a visible slant
 
-// Topups are supposed to fire before mass drops below this threshold —
-// doing so is fine. Roughly 1 in 4 segments instead runs it late, dropping
-// well below threshold first, so a handful of occasions show up as
-// attrition per printer.
-export const POWDER_TOPUP_THRESHOLD_KG = 20
-const ON_TIME_SEGMENT_END_KG = 24
-const LATE_SEGMENT_END_KG = 10
+// Segments alternate between a shallower and a deeper dip before topup
+// fires, so the mass curve reads with some natural variety rather than an
+// identical sawtooth every time.
+const SHALLOW_SEGMENT_END_KG = 24
+const DEEP_SEGMENT_END_KG = 10
 
-// The first segment always fires its topup on time; most segments after
-// that run late instead, so a printer's chart shows a couple of clear
-// late-topup scenarios rather than being a rare one-off.
-function isLateSegment(globalSegmentIndex: number): boolean {
+function isDeepDipSegment(globalSegmentIndex: number): boolean {
   return globalSegmentIndex % 3 !== 0
 }
 
@@ -148,16 +71,10 @@ function getTopupAmount(positionInCycle: number, cycleIndex: number): number {
 // 30-build segment's total drop), holds perfectly flat across changeover/
 // idle gaps (no build = no powder consumed), then ramps sharply back up
 // over TOPUP_DURATION_MINUTES once a segment's build count is hit.
-export type PowderLateWindow = { start: string; end: string }
-
-export function generatePowderMassSeries(printerId: string = "3"): {
-  points: PowderMassPoint[]
-  lateWindows: PowderLateWindow[]
-} {
+export function generatePowderMassSeries(printerId: string = "3"): PowderMassPoint[] {
   const segments = getRuntimeSegments(printerId)
   const points: PowderMassPoint[] = []
-  const lateWindows: PowderLateWindow[] = []
-  if (segments.length === 0) return { points, lateWindows }
+  if (segments.length === 0) return points
 
   let cursor = new Date(2025, 3, 1, 0, 0)
   let mass = POWDER_FULL_KG
@@ -165,39 +82,25 @@ export function generatePowderMassSeries(printerId: string = "3"): {
   let cycleIndex = 0
   let positionInCycle = 0
   let segmentLength = SEGMENT_BUILD_COUNTS[0]
-  let segmentEndTarget = isLateSegment(0) ? LATE_SEGMENT_END_KG : ON_TIME_SEGMENT_END_KG
+  let segmentEndTarget = isDeepDipSegment(0) ? DEEP_SEGMENT_END_KG : SHALLOW_SEGMENT_END_KG
   let segmentStartMass = mass
   let buildsIntoSegment = 0
-  // Marks the moment mass first crosses the topup threshold within a late
-  // segment — closed off into a lateWindows entry once that segment's
-  // topup finally fires, so the page can shade the whole overrun span.
-  let lateWindowStart: string | null = null
 
-  points.push({ date: cursor.toISOString(), massKg: mass, belowThreshold: false })
+  points.push({ date: cursor.toISOString(), massKg: mass })
 
   segments.forEach(([hours, run]) => {
     cursor = addHours(cursor, hours)
 
     if (run === 0) {
       // ChangeOver/idle time — flat line, no powder consumed.
-      points.push({
-        date: cursor.toISOString(),
-        massKg: mass,
-        belowThreshold: mass < POWDER_TOPUP_THRESHOLD_KG,
-      })
+      points.push({ date: cursor.toISOString(), massKg: mass })
       return
     }
 
     buildsIntoSegment++
-    const wasBelowThreshold = mass < POWDER_TOPUP_THRESHOLD_KG
     const perBuildDrop = (segmentStartMass - segmentEndTarget) / segmentLength
     mass = Math.max(mass - perBuildDrop, 0)
-    const isBelowThreshold = mass < POWDER_TOPUP_THRESHOLD_KG
-    points.push({ date: cursor.toISOString(), massKg: mass, belowThreshold: isBelowThreshold })
-
-    if (isBelowThreshold && !wasBelowThreshold) {
-      lateWindowStart = cursor.toISOString()
-    }
+    points.push({ date: cursor.toISOString(), massKg: mass })
 
     if (buildsIntoSegment >= segmentLength) {
       const isFullRefill = positionInCycle === SEGMENTS_PER_CYCLE - 1
@@ -206,16 +109,7 @@ export function generatePowderMassSeries(printerId: string = "3"): {
         : Math.min(POWDER_FULL_KG, mass + getTopupAmount(positionInCycle, cycleIndex))
 
       cursor = addMinutes(cursor, TOPUP_DURATION_MINUTES)
-      points.push({
-        date: cursor.toISOString(),
-        massKg: mass,
-        belowThreshold: mass < POWDER_TOPUP_THRESHOLD_KG,
-      })
-
-      if (lateWindowStart) {
-        lateWindows.push({ start: lateWindowStart, end: cursor.toISOString() })
-        lateWindowStart = null
-      }
+      points.push({ date: cursor.toISOString(), massKg: mass })
 
       positionInCycle++
       if (positionInCycle >= SEGMENTS_PER_CYCLE) {
@@ -225,15 +119,15 @@ export function generatePowderMassSeries(printerId: string = "3"): {
 
       globalSegmentIndex++
       segmentLength = SEGMENT_BUILD_COUNTS[globalSegmentIndex % SEGMENT_BUILD_COUNTS.length]
-      segmentEndTarget = isLateSegment(globalSegmentIndex)
-        ? LATE_SEGMENT_END_KG
-        : ON_TIME_SEGMENT_END_KG
+      segmentEndTarget = isDeepDipSegment(globalSegmentIndex)
+        ? DEEP_SEGMENT_END_KG
+        : SHALLOW_SEGMENT_END_KG
       segmentStartMass = mass
       buildsIntoSegment = 0
     }
   })
 
-  return { points, lateWindows }
+  return points
 }
 
 // ---------------------------------------------------------------------------
@@ -549,7 +443,7 @@ export type PrinterLiveSchedule = {
 // 19:00-7:00.
 const LIVE_SCHEDULE_ANCHOR = new Date(2026, 6, 29, 7, 0)
 export const LIVE_SCHEDULE_ANCHOR_ISO = LIVE_SCHEDULE_ANCHOR.toISOString()
-export const LIVE_SCHEDULE_WINDOW_HOURS = 240 // 10 days of scrollable data
+export const LIVE_SCHEDULE_WINDOW_HOURS = 720 // 30 days of scrollable data
 const LIVE_SHIFT_LENGTH_HOURS = 12
 const LIVE_SHIFT_CUTOFF_HOURS = 2.5 // won't start a build this close to shift end
 const LIVE_BUILD_HOUR_OPTIONS = [8, 8, 9, 9, 9, 10, 10, 11, 11, 12] // the ~10 real build sizes
@@ -1329,7 +1223,6 @@ export type GanttSegment = {
     | "Ahead"
     | "Leave"
     | "Maintenance"
-    | "StartOffset"
   start: string
   end: string
   lotId?: string
@@ -1996,6 +1889,116 @@ export function generatePlanningBuildSpans(
   }
 
   return spans
+}
+
+// Full data window every KPI/runtime series covers — the Overview page's
+// date filter defaults to this so an unfiltered view matches "all data."
+export const KPI_DATA_RANGE_START_ISO = new Date(2025, 3, 1, 0, 0).toISOString()
+export const KPI_DATA_RANGE_END_ISO = addDays(
+  new Date(2025, 3, 1, 0, 0),
+  PRODUCTION_DATA_TOTAL_DAYS
+).toISOString()
+
+type RunSegment = { start: Date; end: Date; run: number }
+
+function getActualRunSegments(printerId: string): RunSegment[] {
+  const start = new Date(2025, 3, 1, 0, 0)
+  let cursor = start
+  return getRuntimeSegments(printerId).map(([hours, run]) => {
+    const segStart = cursor
+    cursor = addHours(cursor, hours)
+    return { start: segStart, end: cursor, run }
+  })
+}
+
+function getPlannedRunSegments(): RunSegment[] {
+  const start = new Date(2025, 3, 1, 0, 0)
+  const targetEnd = addDays(start, PRODUCTION_DATA_TOTAL_DAYS)
+  const segments: RunSegment[] = []
+  let cursor = start
+  let i = 0
+  while (cursor < targetEnd) {
+    const buildStart = cursor
+    const buildEnd = addHours(buildStart, getPlannedBuildHours(i))
+    const changeOverEnd = addHours(buildEnd, PLANNING_CHANGEOVER_HOURS)
+    segments.push({ start: buildStart, end: buildEnd, run: 1 })
+    segments.push({ start: buildEnd, end: changeOverEnd, run: 0 })
+    cursor = changeOverEnd
+    i++
+  }
+  return segments
+}
+
+// Sums each segment's overlap with [rangeStart, rangeEnd) into build/
+// changeover hours, so a narrower date filter reports real partial-hour
+// totals instead of only counting fully-contained segments. Available hours
+// is defined as build+changeover hours actually in range (segments tile
+// back-to-back with no gaps), not the raw calendar span, so it still reads
+// as "time the printer was doing something" if the range runs past the end
+// of the generated data.
+function summarizeSegmentsInRange(
+  segments: RunSegment[],
+  rangeStart: Date,
+  rangeEnd: Date
+): KpiSummary {
+  let totalPrintHours = 0
+  let totalChangeOverHours = 0
+  let buildCount = 0
+  let changeOverCount = 0
+
+  for (const seg of segments) {
+    const overlapStartMs = Math.max(seg.start.getTime(), rangeStart.getTime())
+    const overlapEndMs = Math.min(seg.end.getTime(), rangeEnd.getTime())
+    if (overlapEndMs <= overlapStartMs) continue
+    const overlapHours = (overlapEndMs - overlapStartMs) / (1000 * 60 * 60)
+
+    if (seg.run === 1) {
+      totalPrintHours += overlapHours
+      buildCount++
+    } else {
+      totalChangeOverHours += overlapHours
+      changeOverCount++
+    }
+  }
+
+  const availableHours = totalPrintHours + totalChangeOverHours
+  return {
+    availableHours,
+    totalBuilds: buildCount,
+    totalPrintHours,
+    averageBuildHours: buildCount > 0 ? totalPrintHours / buildCount : 0,
+    averageChangeOverHours:
+      changeOverCount > 0 ? totalChangeOverHours / changeOverCount : 0,
+    totalChangeOverHours,
+    utilization: availableHours > 0 ? (totalPrintHours / availableHours) * 100 : 0,
+  }
+}
+
+// Slices actual production KPIs to a date range (defaults to the full
+// generated window) — used by the Overview page's date filter.
+export function getKpiSummaryForRange(
+  printerId: string = "3",
+  rangeStartIso: string = KPI_DATA_RANGE_START_ISO,
+  rangeEndIso: string = KPI_DATA_RANGE_END_ISO
+): KpiSummary {
+  return summarizeSegmentsInRange(
+    getActualRunSegments(printerId),
+    new Date(rangeStartIso),
+    new Date(rangeEndIso)
+  )
+}
+
+// Slices planned KPIs to the same date range for the production/planning
+// comparison on the Overview page.
+export function getKpiPlanningSummaryForRange(
+  rangeStartIso: string = KPI_DATA_RANGE_START_ISO,
+  rangeEndIso: string = KPI_DATA_RANGE_END_ISO
+): KpiSummary {
+  return summarizeSegmentsInRange(
+    getPlannedRunSegments(),
+    new Date(rangeStartIso),
+    new Date(rangeEndIso)
+  )
 }
 
 export type LotTimeline = {

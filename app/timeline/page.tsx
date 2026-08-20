@@ -54,48 +54,24 @@ const CHAT_PROMPTS: ChatPrompt[] = [
       "Use the Lot Id filter above to isolate a single lot's Production vs Planning bars, or leave it on \"All\" to see every lot chained back-to-back on the printer's timeline.",
   },
   {
-    keywords: ["start", "offset", "difference", "drift"],
+    keywords: ["size", "size 1", "size one", "categor"],
     answer:
-      "On the Batch/Lot View Timeline, a gold \"Start Difference\" segment appears on whichever row (Production or Planning) starts later for that lot — hover it to see exactly how far apart the two starts are.",
+      "The Batch/Lot View Timeline groups lots by size (Size 1-5) rather than by lot ID — there's no real size attribute behind this yet, so lots are placed into a size as a placeholder grouping. Hover any bar to see which actual lot it belongs to.",
   },
 ]
 
-// Production and Planning are each their own independently-chained sequence,
-// so the same lot can start at different times in each — one lags the
-// other by however much drift has accumulated so far. Prepends a gold
-// "StartOffset" segment to whichever row starts later, spanning from the
-// earlier row's start up to its own, so hovering it shows exactly how far
-// apart the two starts are.
-function withStartOffset(
-  productionSegments: GanttSegment[],
-  planningSegments: GanttSegment[]
-): { productionSegments: GanttSegment[]; planningSegments: GanttSegment[] } {
-  if (productionSegments.length === 0 || planningSegments.length === 0) {
-    return { productionSegments, planningSegments }
-  }
+const LOT_SIZE_CATEGORIES = [1, 2, 3, 4, 5]
 
-  const productionStart = new Date(productionSegments[0].start).getTime()
-  const planningStart = new Date(planningSegments[0].start).getTime()
-  if (productionStart === planningStart) {
-    return { productionSegments, planningSegments }
+// No real "size" attribute exists on a lot yet, so each lot is
+// deterministically bucketed into one of 5 placeholder size categories
+// (stable across re-renders) purely so the Batch/Lot View Timeline has
+// something real to group by until actual size data exists.
+function assignLotSizeCategory(lotId: string): number {
+  let hash = 0
+  for (let i = 0; i < lotId.length; i++) {
+    hash = (hash * 31 + lotId.charCodeAt(i)) >>> 0
   }
-
-  const common = {
-    lotId: productionSegments[0].lotId,
-    productId: productionSegments[0].productId,
-    operator: productionSegments[0].operator,
-  }
-
-  const offsetSegment: GanttSegment = {
-    type: "StartOffset",
-    start: new Date(Math.min(productionStart, planningStart)).toISOString(),
-    end: new Date(Math.max(productionStart, planningStart)).toISOString(),
-    ...common,
-  }
-
-  return productionStart > planningStart
-    ? { productionSegments: [offsetSegment, ...productionSegments], planningSegments }
-    : { productionSegments, planningSegments: [offsetSegment, ...planningSegments] }
+  return (hash % LOT_SIZE_CATEGORIES.length) + 1
 }
 
 export default function TimelinePage() {
@@ -106,6 +82,9 @@ export default function TimelinePage() {
   const [highlightedLotId, setHighlightedLotId] = React.useState<string | null>(
     null
   )
+  const [highlightedBatchLotId, setHighlightedBatchLotId] = React.useState<
+    string | null
+  >(null)
 
   const printerLotChain = React.useMemo(
     () => generatePrinterLotChain(printer),
@@ -184,40 +163,50 @@ export default function TimelinePage() {
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-medium">Batch/Lot View Timeline</h2>
-          <GanttLegend showStartOffset />
+          <GanttLegend />
         </div>
         <GanttAxis domainStart={domainStart} domainEnd={domainEnd} />
         <div className="flex flex-col gap-2">
           <span className="text-sm font-medium">{printer}</span>
           <div className="flex flex-col gap-4 pl-4">
-            {visibleLots.map((lot) => {
-              const planningLot = visiblePlanningLots.find(
-                (planned) => planned.lotId === lot.lotId
+            {LOT_SIZE_CATEGORIES.map((size) => {
+              const lotsInSize = visibleLots.filter(
+                (lot) => assignLotSizeCategory(lot.lotId) === size
               )
+              if (lotsInSize.length === 0) return null
 
-              const { productionSegments, planningSegments } = withStartOffset(
-                lot.segments,
-                planningLot?.segments ?? []
-              )
+              const combinedProduction: GanttSegment[] = []
+              const combinedPlanning: GanttSegment[] = []
+              lotsInSize.forEach((lot) => {
+                const planningLot = visiblePlanningLots.find(
+                  (planned) => planned.lotId === lot.lotId
+                )
+                combinedProduction.push(...lot.segments)
+                if (planningLot) combinedPlanning.push(...planningLot.segments)
+              })
 
               return (
-                <div key={lot.lotId} className="flex flex-col gap-1.5">
-                  <span className="text-sm font-medium">{lot.lotId}</span>
+                <div key={size} className="flex flex-col gap-1.5">
+                  <span className="text-sm font-medium">Size {size}</span>
                   <div className="flex flex-col gap-1.5 pl-4">
                     <GanttRow
                       label="Production"
-                      segments={productionSegments}
+                      segments={combinedProduction}
                       domainStart={domainStart}
                       domainEnd={domainEnd}
                       trackWidth={100}
+                      highlightedKey={highlightedBatchLotId}
+                      onHighlightKeyChange={setHighlightedBatchLotId}
                     />
-                    {planningLot && (
+                    {combinedPlanning.length > 0 && (
                       <GanttRow
                         label="Planning"
-                        segments={planningSegments}
+                        segments={combinedPlanning}
                         domainStart={domainStart}
                         domainEnd={domainEnd}
                         trackWidth={100}
+                        highlightedKey={highlightedBatchLotId}
+                        onHighlightKeyChange={setHighlightedBatchLotId}
                       />
                     )}
                   </div>
